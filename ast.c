@@ -38,7 +38,7 @@ static struct entry *pool;
 void
 begin_code_allocation()
 {
-    pool_size = 10;
+    pool_size = 100;
     next_pool_slot = 0;
     pool = mymalloc(pool_size * sizeof(struct entry), M_AST_POOL);
 }
@@ -55,22 +55,17 @@ end_code_allocation(int aborted)
 	}
     }
     myfree(pool, M_AST_POOL);
+    pool = NULL;
 }
 
 static void *
 allocate(int size, Memory_Type type)
 {
+    if (!pool)
+	return mymalloc(size, type);
     if (next_pool_slot >= pool_size) {	/* enlarge the pool */
-	struct entry *new_pool;
-	int i;
-
 	pool_size *= 2;
-	new_pool = mymalloc(pool_size * sizeof(struct entry), M_AST_POOL);
-	for (i = 0; i < next_pool_slot; i++) {
-	    new_pool[i] = pool[i];
-	}
-	myfree(pool, M_AST_POOL);
-	pool = new_pool;
+	pool = myrealloc(pool, pool_size * sizeof(struct entry), M_AST_POOL);
     }
     pool[next_pool_slot].type = type;
     return pool[next_pool_slot++].ptr = mymalloc(size, type);
@@ -85,11 +80,16 @@ deallocate(void *ptr)
 	if (ptr == pool[i].ptr) {
 	    myfree(ptr, pool[i].type);
 	    pool[i].ptr = 0;
-	    return;
+	    break;
 	}
     }
-
+    if (i == next_pool_slot) {
     errlog("DEALLOCATE: Unknown pointer deallocated\n");
+	return;
+    }
+    if (i == next_pool_slot - 1)
+	while (pool[next_pool_slot - 1].ptr == 0)
+	    --next_pool_slot;
 }
 
 char *
@@ -129,6 +129,7 @@ alloc_stmt(enum Stmt_Kind kind)
 
     result->kind = kind;
     result->next = 0;
+    memset(&result->a, 0, sizeof(result->a));
     return result;
 }
 
@@ -162,6 +163,8 @@ alloc_expr(enum Expr_Kind kind)
     Expr *result = allocate(sizeof(Expr), M_AST);
 
     result->kind = kind;
+    memset(&result->a, 0, sizeof(result->a));
+    result->a.typemask = ~0; /* could be any type initially */
     return result;
 }
 
@@ -220,9 +223,9 @@ alloc_scatter(enum Scatter_Kind kind, int id, Expr * expr)
     return sc;
 }
 
-static void free_expr(Expr *);
+void free_expr(Expr *);
 
-static void
+void
 free_arg_list(Arg_List * args)
 {
     Arg_List *arg, *next_arg;
@@ -247,7 +250,7 @@ free_scatter(Scatter * sc)
     }
 }
 
-static void
+void
 free_expr(Expr * expr)
 {
     switch (expr->kind) {
@@ -409,6 +412,218 @@ free_stmt(Stmt * stmt)
 
 	myfree(stmt, M_AST);
     }
+}
+
+
+Expr *copy_expr(Expr *);
+
+Arg_List *
+copy_arg_list(Arg_List * args)
+{
+    Arg_List *result;
+
+    if (!args)
+	return NULL;
+    result = allocate(sizeof(Arg_List), M_AST);
+    *result = *args;
+    result->expr = copy_expr(args->expr);
+    result->next = copy_arg_list(args->next);
+    return result;
+}
+
+static Scatter *
+copy_scatter(Scatter * sc)
+{
+    Scatter *result;
+
+    if (!sc)
+	return NULL;
+    result = allocate(sizeof(Scatter), M_AST);
+    *result = *sc;
+    if (sc->expr)
+	result->expr = copy_expr(sc->expr);
+    result->next = copy_scatter(sc->next);
+    return result;
+}
+
+Expr *
+copy_expr(Expr * expr)
+{
+    Expr *result = allocate(sizeof(Expr), M_AST);
+
+    *result = *expr;
+    switch (expr->kind) {
+
+    case EXPR_VAR:
+	result->e.var = var_ref(expr->e.var);
+	break;
+
+    case EXPR_ID:
+    case EXPR_LENGTH:
+	/* Do nothing. */
+	break;
+
+    case EXPR_PROP:
+    case EXPR_INDEX:
+    case EXPR_PLUS:
+    case EXPR_MINUS:
+    case EXPR_TIMES:
+    case EXPR_DIVIDE:
+    case EXPR_MOD:
+    case EXPR_AND:
+    case EXPR_OR:
+    case EXPR_EQ:
+    case EXPR_NE:
+    case EXPR_LT:
+    case EXPR_LE:
+    case EXPR_GT:
+    case EXPR_GE:
+    case EXPR_IN:
+    case EXPR_ASGN:
+    case EXPR_EXP:
+	result->e.bin.lhs = copy_expr(expr->e.bin.lhs);
+	result->e.bin.rhs = copy_expr(expr->e.bin.rhs);
+	break;
+
+    case EXPR_COND:
+	result->e.cond.condition = copy_expr(expr->e.cond.condition);
+	result->e.cond.consequent = copy_expr(expr->e.cond.consequent);
+	result->e.cond.alternate = copy_expr(expr->e.cond.alternate);
+	break;
+
+    case EXPR_VERB:
+	result->e.verb.obj = copy_expr(expr->e.verb.obj);
+	result->e.verb.verb = copy_expr(expr->e.verb.verb);
+	result->e.verb.args = copy_arg_list(expr->e.verb.args);
+	break;
+
+    case EXPR_RANGE:
+	result->e.range.base = copy_expr(expr->e.range.base);
+	result->e.range.from = copy_expr(expr->e.range.from);
+	result->e.range.to = copy_expr(expr->e.range.to);
+	break;
+
+    case EXPR_CALL:
+	result->e.call.args = copy_arg_list(expr->e.call.args);
+	break;
+
+    case EXPR_NEGATE:
+    case EXPR_NOT:
+	result->e.expr = copy_expr(expr->e.expr);
+	break;
+
+    case EXPR_LIST:
+	result->e.list = copy_arg_list(expr->e.list);
+	break;
+
+    case EXPR_CATCH:
+	result->e.catch.try = copy_expr(expr->e.catch.try);
+	result->e.catch.codes = copy_arg_list(expr->e.catch.codes);
+	if (expr->e.catch.except)
+	    result->e.catch.except = copy_expr(expr->e.catch.except);
+	break;
+
+    case EXPR_SCATTER:
+	result->e.scatter = copy_scatter(expr->e.scatter);
+	break;
+
+    default:
+	errlog("COPY_EXPR: Unknown Expr_Kind: %d\n", expr->kind);
+	break;
+    }
+
+    return result;
+}
+
+Stmt *
+copy_stmt(Stmt * stmt)
+{
+    Stmt *result, *final = NULL, **prevs_next = &final;
+    Except_Arm *restry;
+
+    for (; stmt; stmt = stmt->next) {
+	result = allocate(sizeof(Stmt), M_AST);
+	*result = *stmt;
+	*prevs_next = result;
+	prevs_next = &result->next;
+
+	switch (stmt->kind) {
+
+	case STMT_COND: {
+	    Cond_Arm **pp, *resarm, *arm;
+
+	    pp = &result->s.cond.arms;
+	    for (arm = stmt->s.cond.arms; arm; arm = arm->next) {
+	        resarm = allocate(sizeof(Cond_Arm), M_AST);
+		*pp = resarm;
+		*resarm = *arm;
+		pp = &resarm->next;
+		resarm->condition = copy_expr(arm->condition);
+		resarm->stmt = copy_stmt(arm->stmt);
+	    }
+	    if (stmt->s.cond.otherwise)
+		result->s.cond.otherwise = copy_stmt(stmt->s.cond.otherwise);
+	    break;
+	}
+
+	case STMT_LIST:
+	    result->s.list.expr = copy_expr(stmt->s.list.expr);
+	    result->s.list.body = copy_stmt(stmt->s.list.body);
+	    break;
+
+	case STMT_RANGE:
+	    result->s.range.from = copy_expr(stmt->s.range.from);
+	    result->s.range.to = copy_expr(stmt->s.range.to);
+	    result->s.range.body = copy_stmt(stmt->s.range.body);
+	    break;
+
+	case STMT_WHILE:
+	    result->s.loop.condition = copy_expr(stmt->s.loop.condition);
+	    result->s.loop.body = copy_stmt(stmt->s.loop.body);
+	    break;
+
+	case STMT_FORK:
+	    result->s.fork.time = copy_expr(stmt->s.fork.time);
+	    result->s.fork.body = copy_stmt(stmt->s.fork.body);
+	    break;
+
+	case STMT_EXPR:
+	case STMT_RETURN:
+	    if (stmt->s.expr)
+		result->s.expr = copy_expr(stmt->s.expr);
+	    break;
+
+	case STMT_TRY_EXCEPT: {
+	    Except_Arm **pp, *resarm, *except;
+
+	    result->s.catch.body = copy_stmt(stmt->s.catch.body);
+	    pp = &result->s.catch.excepts;
+	    for (except = stmt->s.catch.excepts; except; except = except = except->next) {
+		resarm = allocate(sizeof(Except_Arm), M_AST);
+		*resarm = *except;
+		*pp = resarm;
+		pp = &resarm->next;
+		resarm->codes = copy_arg_list(except->codes);
+		resarm->stmt = copy_stmt(except->stmt);
+	    }
+	    break;
+	}
+
+	case STMT_TRY_FINALLY:
+	    result->s.finally.body = copy_stmt(stmt->s.finally.body);
+	    result->s.finally.handler = copy_stmt(stmt->s.finally.handler);
+	    break;
+
+	case STMT_BREAK:
+	case STMT_CONTINUE:
+	    break;		/* Nothing extra to copy */
+
+	default:
+	    errlog("COPY_STMT: unknown Stmt_Kind: %d\n", stmt->kind);
+	    break;
+	}
+    }
+    return final;
 }
 
 char rcsid_ast[] = "$Id$";

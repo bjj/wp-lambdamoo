@@ -467,9 +467,13 @@ bf_verb_code(Var arglist, Byte next, void *vdata, Objid progr)
     else if (!db_verb_allows(h, progr, VF_READ))
 	return make_error_pack(E_PERM);
 
+#if 1
+    code = db_verb_program(h)->code;
+#else
     code = new_list(0);
     unparse_program(db_verb_program(h), lister, &code, parens, indent,
 		    MAIN_VECTOR);
+#endif
 
     return make_var_pack(code);
 }

@@ -75,12 +75,21 @@ program_bytes(Program * p)
     count += sizeof(Bytecodes) * p->fork_vectors_size;
     for (i = 0; i < p->fork_vectors_size; i++)
 	count += p->fork_vectors[i].size;
+/* XXX jit */
 
     count += sizeof(const char *) * p->num_var_names;
     for (i = 0; i < p->num_var_names; i++)
 	count += strlen(p->var_names[i]) + 1;
 
     return count;
+}
+
+static void
+free_bytecodes(Bytecodes *bcp)
+{
+	myfree(bcp->vector, M_BYTECODES);
+	myfree(bcp->jitfn, M_BYTECODES);
+	myfree(bcp->jitentries, M_BYTECODES);
 }
 
 void
@@ -98,7 +107,7 @@ free_program(Program * p)
 	    myfree(p->literals, M_LIT_LIST);
 
 	for (i = 0; i < p->fork_vectors_size; i++)
-	    myfree(p->fork_vectors[i].vector, M_BYTECODES);
+	    free_bytecodes(&p->fork_vectors[i]);
 	if (p->fork_vectors_size)
 	    myfree(p->fork_vectors, M_FORK_VECTORS);
 
@@ -106,7 +115,9 @@ free_program(Program * p)
 	    free_str(p->var_names[i]);
 	myfree(p->var_names, M_NAMES);
 
-	myfree(p->main_vector.vector, M_BYTECODES);
+	free_bytecodes(&p->main_vector);
+
+	free_var(p->code);
 
 	myfree(p, M_PROGRAM);
     }

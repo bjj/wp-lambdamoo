@@ -835,11 +835,13 @@ check_user_task_limit(Objid user)
 }
 
 enum error
-enqueue_forked_task2(activation a, int f_index, unsigned after_seconds, int vid)
+enqueue_forked_task2(activation a, int f_index, int after_seconds, int vid)
 {
     int id;
     Var *rt_env;
 
+    if (after_seconds < 0)
+	return E_INVARG;
     if (!check_user_task_limit(a.progr))
 	return E_QUOTA;
 

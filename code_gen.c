@@ -27,6 +27,12 @@
 #include "utils.h"
 #include "version.h"
 #include "my-stdlib.h"
+#include "optimize.h"
+#include <lightning.h>
+#include "jit_insns.h"
+
+#undef _jit
+#define _jit (state->jst)
 
 /*** The reader will likely find it useful to consult the file
  *** `MOOCodeSequences.txt' in this directory while reading the code in this
@@ -62,6 +68,12 @@ struct loop {
     unsigned top_stack;
     int bottom_label;
     unsigned bottom_stack;
+
+    jit_insn *jit_top;		/* pc of top of iteration */
+    jit_insn *jit_end_fixup;	/* fixup for the jump past body */
+    jit_insn *jit_break_fixup;	/* if nonzero, another jump to end */
+    jit_insn *jit_breaker;	/* if nonzero the pc of 'break' for this loop */
+    jit_insn *jit_continuer;	/* if nonzero the pc of 'continue' */
 };
 typedef struct loop Loop;
 
@@ -74,6 +86,13 @@ struct state {
     Fixup *fixups;
     unsigned num_bytes, max_bytes;
     Byte *bytes;
+
+    unsigned num_jits, max_jits;
+    char *jits;
+    jit_state jst;
+    int (*jitfn)();
+    unsigned num_jitentries, max_jitentries;
+    void **jitentries;
 #ifdef BYTECODE_REDUCE_REF
     Byte *pushmap;
     Byte *trymap;
@@ -124,6 +143,8 @@ free_gstate(GState gstate)
 static void
 init_state(State * state, GState * gstate)
 {
+    memset(state, 0, sizeof(*state));
+
     state->num_literals = state->num_forks = state->num_labels = 0;
     state->num_var_refs = state->num_stacks = 0;
 
@@ -136,6 +157,15 @@ init_state(State * state, GState * gstate)
     state->num_bytes = 0;
     state->max_bytes = 50;
     state->bytes = mymalloc(sizeof(Byte) * state->max_bytes, M_BYTECODES);
+
+    /* XXX can't be moved, need better estimate */
+    state->max_jits = 65536;
+    state->jits = mymalloc(state->max_jits, M_BYTECODES);
+    state->jitfn = (int (*)())(jit_set_ip(state->jits).iptr);
+    state->max_jitentries = 100;
+    state->num_jitentries = 1;
+    state->jitentries = mymalloc(state->max_jitentries * sizeof(void *), M_BYTECODES);
+    state->jitentries[0] = state->jits;
 #ifdef BYTECODE_REDUCE_REF
     state->pushmap = mymalloc(sizeof(Byte) * state->max_bytes, M_BYTECODES);
     state->trymap = mymalloc(sizeof(Byte) * state->max_bytes, M_BYTECODES);
@@ -194,6 +224,23 @@ emit_extended_byte(Byte b, State * state)
 }
 
 static int
+add_jit_entry(State * state, void ***p)
+{
+    int i;
+
+    if (state->num_jitentries == state->max_jitentries) {
+	unsigned new_max = 2 * state->max_jitentries;
+	state->jitentries = myrealloc(state->jitentries,
+				sizeof(void *) * new_max,
+				     M_CODE_GEN);
+	state->max_jitentries = new_max;
+    }
+    i = state->num_jitentries++;
+    *p = &state->jitentries[i];
+    return i;
+}
+
+static int
 add_known_fixup(Fixup f, State * state)
 {
     int i;
@@ -240,7 +287,7 @@ add_fixup(enum fixup_kind kind, unsigned value, State * state)
     return add_linked_fixup(kind, value, -1, state);
 }
 
-static void
+static int
 add_literal(Var v, State * state)
 {
     GState *gstate = state->gstate;
@@ -284,6 +331,7 @@ add_literal(Var v, State * state)
     state->num_literals++;
     if (i > state->max_literal)
 	state->max_literal = i;
+    return i;
 }
 
 static void
@@ -446,7 +494,8 @@ restore_stack_top(unsigned old, State * state)
 
 static void
 enter_loop(int id, Fixup top_label, unsigned top_stack,
-	   int bottom_label, unsigned bottom_stack, State * state)
+	   int bottom_label, unsigned bottom_stack, State * state,
+	   jit_insn *top, jit_insn *endf)
 {
     int i;
     Loop *loop;
@@ -469,6 +518,11 @@ enter_loop(int id, Fixup top_label, unsigned top_stack,
     loop->top_stack = top_stack;
     loop->bottom_label = bottom_label;
     loop->bottom_stack = bottom_stack;
+    loop->jit_top = top;
+    loop->jit_end_fixup = endf;
+    loop->jit_break_fixup = 0;
+    loop->jit_breaker = 0;
+    loop->jit_continuer = 0;
 }
 
 static int
@@ -513,8 +567,52 @@ emit_var_op(Opcode op, unsigned slot, State * state)
 static void generate_expr(Expr *, State *);
 
 static void
+jim_generate_arg_list(Arg_List * args, State * state)
+{
+    if (!args) {
+	jim_OP_MAKE_EMPTY_LIST(&state->jst);
+	push_stack(1, state);
+    } else {
+	int first = 1;
+
+	while (args) {
+		if (args->kind == ARG_SPLICE) {
+			generate_expr(args->expr, state);
+			if (first)
+				jim_OP_CHECK_LIST_FOR_SPLICE(&state->jst);
+			else {
+				jim_OP_LIST_APPEND(&state->jst);
+				pop_stack(1 - first, state);
+			}
+			args = args->next;
+		} else {
+			const int limit = 20;
+			int n = 0;
+			for (; args && args->kind == ARG_NORMAL && n < limit; args = args->next) {
+				++n;
+				generate_expr(args->expr, state);
+			}
+			if (first) {
+				jim_OP_MAKE_NDLETON_LIST(&state->jst, n);
+			} else if (n == 1) {
+				jim_OP_LIST_ADD_TAIL(&state->jst);
+			} else {
+				jim_OP_MAKE_NDLETON_LIST(&state->jst, n);
+				jim_OP_LIST_APPEND(&state->jst);
+			}
+			pop_stack(n - first, state);
+		}
+		first = 0;
+	}
+    }
+}
+
+
+static void
 generate_arg_list(Arg_List * args, State * state)
 {
+    jim_generate_arg_list(args, state);
+    return; /* XXX */
     if (!args) {
 	emit_byte(OP_MAKE_EMPTY_LIST, state);
 	push_stack(1, state);
@@ -523,8 +621,10 @@ generate_arg_list(Arg_List * args, State * state)
 	unsigned pop = 0;
 
 	for (; args; args = args->next) {
+	    Byte b;
 	    generate_expr(args->expr, state);
-	    emit_byte(args->kind == ARG_NORMAL ? normal_op : splice_op, state);
+	    b = args->kind == ARG_NORMAL ? normal_op : splice_op;
+	    emit_byte(b, state);
 	    pop_stack(pop, state);
 	    normal_op = OP_LIST_ADD_TAIL;
 	    splice_op = OP_LIST_APPEND;
@@ -552,12 +652,15 @@ push_lvalue(Expr * expr, int indexed_above, State * state)
 	generate_expr(expr->e.bin.rhs, state);
 	restore_stack_top(old, state);
 	if (indexed_above) {
+	    jim_REF(&state->jst, 1, 1, -1, 0, TYPEMASK_ANY); /* XXX */
 	    emit_byte(OP_PUSH_REF, state);
 	    push_stack(1, state);
 	}
 	break;
     case EXPR_ID:
 	if (indexed_above) {
+	    jim_PUSH_SLOT(&state->jst, expr->e.id,
+		    expr->a.last_use, expr->a.guaranteed, expr->a.typemask);
 	    emit_var_op(OP_PUSH, expr->e.id, state);
 	    push_stack(1, state);
 	}
@@ -567,6 +670,7 @@ push_lvalue(Expr * expr, int indexed_above, State * state)
 	generate_expr(expr->e.bin.rhs, state);
 	if (indexed_above) {
 	    emit_byte(OP_PUSH_GET_PROP, state);
+	    jim_PUSH_GET_PROP(&state->jst);
 	    push_stack(1, state);
 	}
 	break;
@@ -581,30 +685,57 @@ generate_codes(Arg_List * codes, State * state)
     if (codes)
 	generate_arg_list(codes, state);
     else {
+	jim_PUSH_NUM(&state->jst, 0);
 	emit_byte(OPTIM_NUM_TO_OPCODE(0), state);
 	push_stack(1, state);
     }
 }
 
 static void
-generate_expr(Expr * expr, State * state)
+generate_expr_ign(Expr * expr, State * state, int result_ignored)
 {
+    int result_suppressed = 0;
+
+    if (result_ignored) {
+	    /* just omit any exprs with no side-effects */
+	    switch (expr->kind) {
+	    case EXPR_VAR:
+		return;
+	    default:
+		break;
+	    }
+    }
     switch (expr->kind) {
     case EXPR_VAR:
 	{
+	    int jitdone = 0;
 	    Var v;
 
 	    v = expr->e.var;
+	    if (v.type == TYPE_INT) {
+		jim_PUSH_NUM(&state->jst, v.v.num);
+		jitdone = 1;
+	    } else if (v.type == TYPE_OBJ) {
+		jim_PUSH_OBJ(&state->jst, v.v.obj);
+		jitdone = 1;
+	    }
+
 	    if (v.type == TYPE_INT && IN_OPTIM_NUM_RANGE(v.v.num))
+		/* always jitdone because type=int */
 		emit_byte(OPTIM_NUM_TO_OPCODE(v.v.num), state);
 	    else {
+		int i;
 		emit_byte(OP_IMM, state);
-		add_literal(v, state);
+		i = add_literal(v, state);
+		if (!jitdone)
+			jim_IMM(&state->jst, i);
 	    }
 	    push_stack(1, state);
 	}
 	break;
     case EXPR_ID:
+        jim_PUSH_SLOT(&state->jst, expr->e.id,
+		    expr->a.last_use, expr->a.guaranteed, expr->a.typemask);
 	emit_var_op(OP_PUSH, expr->e.id, state);
 	push_stack(1, state);
 	break;
@@ -615,9 +746,11 @@ generate_expr(Expr * expr, State * state)
 
 	    generate_expr(expr->e.bin.lhs, state);
 	    emit_byte(expr->kind == EXPR_AND ? OP_AND : OP_OR, state);
+	    jim_AND_OR(&state->jst, expr->kind == EXPR_AND);
 	    end_label = add_label(state);
 	    pop_stack(1, state);
 	    generate_expr(expr->e.bin.rhs, state);
+	    jim_AND_OR_end(&state->jst, expr->kind == EXPR_AND);
 	    define_label(end_label, state);
 	}
 	break;
@@ -625,6 +758,8 @@ generate_expr(Expr * expr, State * state)
     case EXPR_NOT:
 	generate_expr(expr->e.expr, state);
 	emit_byte(expr->kind == EXPR_NOT ? OP_NOT : OP_UNARY_MINUS, state);
+	if (expr->kind == EXPR_NOT)
+	    jim_NOT(&state->jst);
 	break;
     case EXPR_EQ:
     case EXPR_NE:
@@ -641,51 +776,65 @@ generate_expr(Expr * expr, State * state)
     case EXPR_PROP:
 	{
 	    Opcode op = OP_ADD;	/* initialize to silence warning */
+	    if (expr->kind == EXPR_PLUS && expr->e.bin.lhs->kind == EXPR_ID && expr->e.bin.rhs->kind == EXPR_ID && expr->e.bin.lhs->a.typemask == TYPEMASK(TYPE_INT) && expr->e.bin.lhs->a.typemask == expr->e.bin.rhs->a.typemask) {
+		jim_ADD_VVs(&state->jst, expr->e.bin.lhs->e.id, expr->e.bin.rhs->e.id);
+		push_stack(1, state);
+		break;
+	    }
 
 	    generate_expr(expr->e.bin.lhs, state);
 	    generate_expr(expr->e.bin.rhs, state);
 	    switch (expr->kind) {
 	    case EXPR_EQ:
 		op = OP_EQ;
+		jim_EQ_NE(&state->jst, 1);
 		break;
 	    case EXPR_NE:
 		op = OP_NE;
+		jim_EQ_NE(&state->jst, 0);
 		break;
 	    case EXPR_GE:
 		op = OP_GE;
+		jim_comparison(&state->jst, op, expr->e.bin.lhs->a.typemask, expr->e.bin.rhs->a.typemask);
 		break;
 	    case EXPR_GT:
 		op = OP_GT;
+		jim_comparison(&state->jst, op, expr->e.bin.lhs->a.typemask, expr->e.bin.rhs->a.typemask);
 		break;
 	    case EXPR_LE:
 		op = OP_LE;
+		jim_comparison(&state->jst, op, expr->e.bin.lhs->a.typemask, expr->e.bin.rhs->a.typemask);
 		break;
 	    case EXPR_LT:
 		op = OP_LT;
+		jim_comparison(&state->jst, op, expr->e.bin.lhs->a.typemask, expr->e.bin.rhs->a.typemask);
 		break;
 	    case EXPR_IN:
+		jim_IN(&state->jst);
 		op = OP_IN;
 		break;
 	    case EXPR_PLUS:
 		op = OP_ADD;
+		jim_ADD(&state->jst, expr->e.bin.lhs->a.typemask, expr->e.bin.rhs->a.typemask);
 		break;
 	    case EXPR_MINUS:
 		op = OP_MINUS;
+		jim_SUBTRACT(&state->jst);
 		break;
 	    case EXPR_TIMES:
 		op = OP_MULT;
 		break;
 	    case EXPR_DIVIDE:
 		op = OP_DIV;
+		jim_DIVIDE(&state->jst);
 		break;
 	    case EXPR_MOD:
 		op = OP_MOD;
+		jim_MODULUS(&state->jst);
 		break;
 	    case EXPR_PROP:
 		op = OP_GET_PROP;
-		break;
-	    case EXPR_INDEX:
-		op = OP_REF;
+	        jim_GET_PROP(&state->jst);
 		break;
 	    default:
 		panic("Not a binary operator in GENERATE_EXPR()");
@@ -703,13 +852,30 @@ generate_expr(Expr * expr, State * state)
     case EXPR_INDEX:
 	{
 	    unsigned old;
-
-	    generate_expr(expr->e.bin.lhs, state);
+	    int id = -1;
+	    Expr *lhs = expr->e.bin.lhs;
+	    /*
+	     * If the lhs is a var, skip pushing it and emit a ref
+	     * that works directly on the variable.  This is it!  My
+	     * first real cheating in the JIT code!
+	     *
+	     * The REF op doesn't have any of the main PUSH smarts,
+	     * so this variable must be guaranteed to exist at this
+	     * point.
+	     *
+	     * This breaks the [$] notation, which uses the stack index
+	     * to find the value to and push the length.  So don't use
+	     * the shortcut if we're indexed.
+	     */
+	    if (expr->a.direct_var_rd && lhs->kind == EXPR_ID && lhs->a.guaranteed && lhs->a.direct_var_rd)
+		id = lhs->e.id;
+	    else
+		generate_expr(lhs, state);
 	    old = save_stack_top(state);
 	    generate_expr(expr->e.bin.rhs, state);
 	    restore_stack_top(old, state);
-	    emit_byte(OP_REF, state);
-	    pop_stack(1, state);
+	    jim_REF(&state->jst, 0, 0, id, lhs->a.last_use, lhs->a.typemask);
+	    pop_stack(id < 0 ? 1 : 0, state);
 	}
 	break;
     case EXPR_RANGE:
@@ -730,6 +896,7 @@ generate_expr(Expr * expr, State * state)
 	    unsigned saved = saved_stack_top(state);
 
 	    if (saved != UINT_MAX) {
+		jim_EOP_LENGTH(&state->jst, saved);
 		emit_extended_byte(EOP_LENGTH, state);
 		add_stack_ref(saved, state);
 		push_stack(1, state);
@@ -744,12 +911,22 @@ generate_expr(Expr * expr, State * state)
 	generate_arg_list(expr->e.call.args, state);
 	emit_byte(OP_BI_FUNC_CALL, state);
 	emit_byte(expr->e.call.func, state);
+	{
+		void **p;
+		int i = add_jit_entry(state, &p);
+		*p = jim_call_bi(&state->jst, expr->e.call.func, i);
+	}
 	break;
     case EXPR_VERB:
 	generate_expr(expr->e.verb.obj, state);
 	generate_expr(expr->e.verb.verb, state);
 	generate_arg_list(expr->e.verb.args, state);
 	emit_call_verb_op(OP_CALL_VERB, state);
+	{
+		void **p;
+		int i = add_jit_entry(state, &p);
+		*p = jim_call_verb(&state->jst, i);
+	}
 	pop_stack(2, state);
 	break;
     case EXPR_COND:
@@ -774,9 +951,12 @@ generate_expr(Expr * expr, State * state)
 	    Expr *e = expr->e.bin.lhs;
 
 	    if (e->kind == EXPR_SCATTER) {
-		int nargs = 0, nreq = 0, rest = -1;
+		int nargs = 0, nreq = 0, rest = -1, ndefaults = 0;
 		unsigned done;
 		Scatter *sc;
+		void **entryps[257];
+		int base_pc = -1;
+		int i;
 
 		generate_expr(expr->e.bin.rhs, state);
 		for (sc = e->e.scatter; sc; sc = sc->next) {
@@ -785,6 +965,8 @@ generate_expr(Expr * expr, State * state)
 			nreq++;
 		    else if (sc->kind == SCAT_REST)
 			rest = nargs;
+		    else if (sc->kind == SCAT_OPTIONAL && sc->expr)
+			ndefaults++;
 		}
 		if (rest == -1)
 		    rest = nargs + 1;
@@ -792,31 +974,55 @@ generate_expr(Expr * expr, State * state)
 		emit_byte(nargs, state);
 		emit_byte(nreq, state);
 		emit_byte(rest, state);
-		for (sc = e->e.scatter; sc; sc = sc->next) {
+		jim_SCATTER_start_id(&state->jst);
+		for (i = 1, sc = e->e.scatter; sc; sc = sc->next, ++i) {
 		    add_var_ref(sc->id, state);
-		    if (sc->kind != SCAT_OPTIONAL)
+		    if (sc->kind != SCAT_OPTIONAL) {
 			add_pseudo_label(0, state);
-		    else if (!sc->expr)
+			jim_SCATTER_add_id(&state->jst, i, sc->id, 0);
+		    } else if (!sc->expr) {
 			add_pseudo_label(1, state);
-		    else
+			jim_SCATTER_add_id(&state->jst, i, sc->id, 1);
+		    } else {
 			sc->label = add_label(state);
+			jim_SCATTER_add_id(&state->jst, i, sc->id, 2);
+		    }
 		}
 		done = add_label(state);
-		for (sc = e->e.scatter; sc; sc = sc->next)
+
+		/* allocate *contiguous* entries */
+		for (i = 0; i < ndefaults; ++i) {
+			int next = add_jit_entry(state, &entryps[i]);
+			if (base_pc == -1)
+				base_pc = next;
+		}
+		/* and if there are defaults we'll have to jump over them */
+		if (ndefaults)
+			(void) add_jit_entry(state, &entryps[i]);
+
+		jim_SCATTER_body(&state->jst, nargs, nreq, rest, base_pc);
+
+		for (i = 0, sc = e->e.scatter; sc; sc = sc->next)
 		    if (sc->kind == SCAT_OPTIONAL && sc->expr) {
+			*entryps[i++] = jim_SCATTER_next_default(&state->jst);
 			define_label(sc->label, state);
 			generate_expr(sc->expr, state);
+			jim_PUT_SLOT(&state->jst, sc->id, 0, 0 /*XXX*/, TYPEMASK_ANY, sc->expr->a.typemask);
 			emit_var_op(OP_PUT, sc->id, state);
 			emit_byte(OP_POP, state);
 			pop_stack(1, state);
 		    }
+		if (ndefaults)
+		    *entryps[i] = jim_SCATTER_next_default(&state->jst);
 		define_label(done, state);
 	    } else {
 		int is_indexed = 0;
 
 		push_lvalue(e, 0, state);
 		generate_expr(expr->e.bin.rhs, state);
-		if (e->kind == EXPR_RANGE || e->kind == EXPR_INDEX)
+		/* XXX result_ignored */
+		if (!result_ignored &&
+		    (e->kind == EXPR_RANGE || e->kind == EXPR_INDEX))
 		    emit_byte(OP_PUT_TEMP, state);
 		while (1) {
 		    switch (e->kind) {
@@ -828,12 +1034,15 @@ generate_expr(Expr * expr, State * state)
 			continue;
 		    case EXPR_INDEX:
 			emit_byte(OP_INDEXSET, state);
+			jim_INDEXSET(&state->jst, e->e.bin.lhs->a.typemask, expr->e.bin.rhs->a.typemask);
 			pop_stack(2, state);
 			e = e->e.bin.lhs;
 			is_indexed = 1;
 			continue;
 		    case EXPR_ID:
 			emit_var_op(OP_PUT, e->e.id, state);
+			jim_PUT_SLOT(&state->jst, e->e.id, !result_ignored, e->a.last_use, e->a.typemask_put, expr->e.bin.rhs->a.typemask);
+			result_suppressed = result_ignored;
 			break;
 		    case EXPR_PROP:
 			emit_byte(OP_PUT_PROP, state);
@@ -845,7 +1054,7 @@ generate_expr(Expr * expr, State * state)
 		    break;
 		}
 		if (is_indexed) {
-		    emit_byte(OP_POP, state);
+		    ;
 		    emit_byte(OP_PUSH_TEMP, state);
 		}
 	    }
@@ -880,6 +1089,8 @@ generate_expr(Expr * expr, State * state)
 		/* Select code from tuple */
 		emit_byte(OPTIM_NUM_TO_OPCODE(1), state);
 		emit_byte(OP_REF, state);
+		jim_PUSH_NUM(&state->jst, 1); /* XXX skip the gyrations */
+		jim_REF(&state->jst, 1, 0, -1, 0, TYPEMASK_ANY);
 	    }
 	    define_label(end_label, state);
 	}
@@ -887,6 +1098,20 @@ generate_expr(Expr * expr, State * state)
     default:
 	panic("Can't happen in GENERATE_EXPR()");
     }
+    if (result_ignored && !result_suppressed) {
+	emit_byte(OP_POP, state);
+	jim_POP_AND_FREE(&state->jst);
+	pop_stack(1, state);
+    }
+    if (result_suppressed) {
+	pop_stack(1, state);
+    }
+}
+
+static void
+generate_expr(Expr * expr, State * state)
+{
+	generate_expr_ign(expr, state, 0);
 }
 
 static Bytecodes stmt_to_code(Stmt *, GState *);
@@ -901,15 +1126,21 @@ generate_stmt(Stmt * stmt, State * state)
 		Opcode if_op = OP_IF;
 		int end_label = -1;
 		Cond_Arm *arms;
+		jit_insn *elsep;
 
 		for (arms = stmt->s.cond.arms; arms; arms = arms->next) {
 		    int else_label;
 
 		    generate_expr(arms->condition, state);
+		    make_if_test(&state->jst, &elsep);
 		    emit_byte(if_op, state);
 		    else_label = add_label(state);
 		    pop_stack(1, state);
 		    generate_stmt(arms->stmt, state);
+		    if (arms->next || stmt->s.cond.otherwise)
+			make_if_middle(&state->jst, elsep, &arms->reloc);
+		    else
+			arms->reloc = elsep;
 		    emit_byte(OP_JUMP, state);
 		    end_label = add_linked_label(end_label, state);
 		    define_label(else_label, state);
@@ -919,6 +1150,9 @@ generate_stmt(Stmt * stmt, State * state)
 		if (stmt->s.cond.otherwise)
 		    generate_stmt(stmt->s.cond.otherwise, state);
 		define_label(end_label, state);
+		for (arms = stmt->s.cond.arms; arms; arms = arms->next) {
+			make_if_end(&state->jst, arms->reloc);
+		}
 	    }
 	    break;
 	case STMT_LIST:
@@ -933,9 +1167,12 @@ generate_stmt(Stmt * stmt, State * state)
 		emit_byte(OP_FOR_LIST, state);
 		add_var_ref(stmt->s.list.id, state);
 		end_label = add_label(state);
+		jim_FOR_LIST(&state->jst, stmt->s.list.id);
 		enter_loop(stmt->s.list.id, loop_top, state->cur_stack,
-			   end_label, state->cur_stack - 2, state);
+			   end_label, state->cur_stack - 2, state,
+			   __t, __r);
 		generate_stmt(stmt->s.list.body, state);
+		jim_FOR_LIST_end(&state->jst, stmt->s.list.id, state->loops[state->num_loops - 1].jit_break_fixup);
 		end_label = exit_loop(state);
 		emit_byte(OP_JUMP, state);
 		add_known_label(loop_top, state);
@@ -954,9 +1191,12 @@ generate_stmt(Stmt * stmt, State * state)
 		emit_byte(OP_FOR_RANGE, state);
 		add_var_ref(stmt->s.range.id, state);
 		end_label = add_label(state);
+		jim_FOR_RANGE(&state->jst, stmt->s.range.id, stmt->a.u.range.loopvar_typemask);
 		enter_loop(stmt->s.range.id, loop_top, state->cur_stack,
-			   end_label, state->cur_stack - 2, state);
+			   end_label, state->cur_stack - 2, state,
+			   __t, __r);
 		generate_stmt(stmt->s.range.body, state);
+		jim_FOR_RANGE_end(&state->jst, stmt->s.range.id, state->loops[state->num_loops - 1].jit_break_fixup);
 		end_label = exit_loop(state);
 		emit_byte(OP_JUMP, state);
 		add_known_label(loop_top, state);
@@ -966,26 +1206,28 @@ generate_stmt(Stmt * stmt, State * state)
 	    break;
 	case STMT_WHILE:
 	    {
-		Fixup loop_top;
-		int end_label;
+		jit_insn *__t = 0, *__r = 0, *__r2 = 0;
 
-		loop_top = capture_label(state);
+		make_while(&state->jst, stmt->s.loop.id, &__t);
 		generate_expr(stmt->s.loop.condition, state);
-		if (stmt->s.loop.id == -1)
-		    emit_byte(OP_WHILE, state);
-		else {
-		    emit_extended_byte(EOP_WHILE_ID, state);
-		    add_var_ref(stmt->s.loop.id, state);
-		}
-		end_label = add_label(state);
 		pop_stack(1, state);
-		enter_loop(stmt->s.loop.id, loop_top, state->cur_stack,
-			   end_label, state->cur_stack, state);
+		make_while_test(&state->jst, stmt->s.loop.id, stmt->s.loop.condition->a.typemask, &__r);
+		enter_loop(stmt->s.loop.id, capture_label(state), state->cur_stack,
+			  add_label(state), state->cur_stack, state, __t, __r);
 		generate_stmt(stmt->s.loop.body, state);
-		end_label = exit_loop(state);
-		emit_byte(OP_JUMP, state);
-		add_known_label(loop_top, state);
-		define_label(end_label, state);
+#if 0
+			generate_expr(stmt->s.loop.condition, state);
+			pop_stack(1, state);
+			make_while_test(&state->jst, stmt->s.loop.id, stmt->s.loop.condition->a.typemask, &__r2);
+			generate_stmt(stmt->s.loop.body, state);
+#endif
+		make_while_end(&state->jst,
+				stmt->s.loop.id,
+				__t,
+				__r,
+				state->loops[state->num_loops - 1].jit_break_fixup,
+				__r2);
+		exit_loop(state);
 	    }
 	    break;
 	case STMT_FORK:
@@ -1000,17 +1242,18 @@ generate_stmt(Stmt * stmt, State * state)
 	    pop_stack(1, state);
 	    break;
 	case STMT_EXPR:
-	    generate_expr(stmt->s.expr, state);
-	    emit_byte(OP_POP, state);
-	    pop_stack(1, state);
+	    generate_expr_ign(stmt->s.expr, state, 1);
 	    break;
 	case STMT_RETURN:
 	    if (stmt->s.expr) {
 		generate_expr(stmt->s.expr, state);
 		emit_ending_op(OP_RETURN, state);
 		pop_stack(1, state);
-	    } else
+		jim_return(&state->jst, 1);
+	    } else {
 		emit_ending_op(OP_RETURN0, state);
+		jim_return(&state->jst, 0);
+	    }
 	    break;
 	case STMT_TRY_EXCEPT:
 	    {
@@ -1036,8 +1279,14 @@ generate_stmt(Stmt * stmt, State * state)
 		for (ex = stmt->s.catch.excepts; ex; ex = ex->next) {
 		    define_label(ex->label, state);
 		    push_stack(1, state);	/* exception tuple */
-		    if (ex->id >= 0)
+		    if (ex->id >= 0) {
 			emit_var_op(OP_PUT, ex->id, state);
+			jim_PUT_SLOT(&state->jst, ex->id, 0, 0, TYPEMASK_ANY, TYPEMASK_ANY);
+		    } else {
+			/* yes it's intentional that the JIT version does
+			 * not use POP, that's the last ,0 up there */
+			jim_POP_AND_FREE(&state->jst);
+		    }
 		    emit_byte(OP_POP, state);
 		    pop_stack(1, state);
 		    generate_stmt(ex->stmt, state);
@@ -1094,10 +1343,14 @@ generate_stmt(Stmt * stmt, State * state)
 		if (stmt->kind == STMT_CONTINUE) {
 		    add_stack_ref(loop->top_stack, state);
 		    add_known_label(loop->top_label, state);
+		    jim_CONTINUE(&state->jst, &loop->jit_continuer,
+				loop->jit_top, loop->top_stack);
 		} else {
 		    add_stack_ref(loop->bottom_stack, state);
 		    loop->bottom_label = add_linked_label(loop->bottom_label,
 							  state);
+		    jim_BREAK(&state->jst, &loop->jit_breaker,
+				&loop->jit_break_fixup, loop->bottom_stack);
 		}
 	    }
 	    break;
@@ -1149,8 +1402,11 @@ stmt_to_code(Stmt * stmt, GState * gstate)
 
     init_state(&state, gstate);
 
+    jim_prolog(&state.jst);
     generate_stmt(stmt, &state);
     emit_ending_op(OP_DONE, &state);
+    jim_return(&state.jst, 0);
+    jim_epilog(&state.jst, state.jits);
 
     if (state.cur_stack != 0)
 	panic("Stack not entirely popped in STMT_TO_CODE()");
@@ -1304,6 +1560,10 @@ stmt_to_code(Stmt * stmt, GState * gstate)
 	} else
 	    bc.vector[new_i++] = state.bytes[old_i];
     }
+
+    bc.jitfn = state.jitfn;		/* XXX */
+    bc.jitentries = myrealloc(state.jitentries,
+			state.num_jitentries * sizeof(void *), M_CODE_GEN);
 
     free_state(state);
 

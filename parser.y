@@ -321,16 +321,19 @@ excepts:
 		    tmp->next = $4;
 		    $$ = $1;
 		}
+	;
 
 except:
 	  opt_id '(' codes ')' statements
 		{ $$ = alloc_except($1 ? find_id($1) : -1, $3, $5); }
+	;
 
 opt_id:
 	  /* NOTHING */
 		{ $$ = 0; }
 	| tID
 		{ $$ = $1; }
+	;
 
 expr:
 	  tINTEGER
@@ -585,18 +588,21 @@ expr:
 dollars_up:
 	  /* NOTHING */
 		{ dollars_ok++; }
+	;
 
 codes:
 	  tANY
 		{ $$ = 0; }
 	| ne_arglist
 		{ $$ = $1; }
+	;
 
 default:
 	  /* NOTHING */
 		{ $$ = 0; }
 	| tARROW expr
 		{ $$ = $2; }
+	;
 
 arglist:
 	  /* NOTHING */
@@ -1091,11 +1097,23 @@ check_loop_name(const char *name, enum loop_exit_kind kind)
 	error("Invalid loop name in `continue' statement: ", name);
 }
 
+static void
+lister(void *data, const char *line)
+{
+    Var *r = (Var *) data;
+    Var v;
+
+    v.type = TYPE_STR;
+    v.v.str = str_dup(line);
+    *r = listappend(*r, v);
+}
+
 Program *
 parse_program(DB_Version version, Parser_Client c, void *data)
 {
     extern int	yyparse();
     Program    *prog;
+    Var pretty;
     
     if (token_stream == 0)
 	token_stream = new_stream(1024);
@@ -1152,9 +1170,18 @@ parse_program(DB_Version version, Parser_Client c, void *data)
 	    }
 	}
 
+	markup_stmts(prog_start);
+	{
+		Program tmp;
+		pretty = new_list(0);
+		tmp.num_var_names = local_names->size;
+		tmp.var_names = local_names->names;
+		unparse_stmts(prog_start, &tmp, lister, &pretty, 0, 1, MAIN_VECTOR);
+	}
 	prog = generate_code(prog_start, version);
 	prog->num_var_names = local_names->size;
 	prog->var_names = local_names->names;
+	prog->code = pretty;
 
 	myfree(local_names, M_NAMES);
 	free_stmt(prog_start);

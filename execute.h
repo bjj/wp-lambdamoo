@@ -53,9 +53,12 @@ typedef struct {
     const char *verb;
     const char *verbname;
     int debug;
+
+    enum error jit_error_out;
+    unsigned jit_func_id;
 } activation;
 
-extern void free_activation(activation a, char data_too);
+extern void free_activation(activation *, char data_too);
 
 typedef struct {
     int task_id;
@@ -92,8 +95,21 @@ enum outcome {
     OUTCOME_DONE,		/* Task ran successfully to completion */
     OUTCOME_ABORTED,		/* Task aborted, either by kill_task() or
 				 * by an uncaught error. */
-    OUTCOME_BLOCKED		/* Task called a blocking built-in function. */
+    OUTCOME_BLOCKED,		/* Task called a blocking built-in function. */
 };
+
+/**** error handling ****/
+
+typedef enum {			/* Reasons for executing a FINALLY handler */
+    /* These constants are stored in the DB, so don't change the order... */
+    FIN_FALL_THRU, FIN_RAISE, FIN_UNCAUGHT, FIN_RETURN,
+    FIN_ABORT,			/* This doesn't actually get you into a FINALLY... */
+    FIN_EXIT
+} Finally_Reason;
+
+struct package;
+extern int unwind_stack(Finally_Reason, Var, enum outcome *outcome);
+extern int raise_error(struct package *p, enum outcome *outcome);
 
 extern enum outcome do_forked_task(Program * prog, Var * rt_env,
 				   activation a, int f_id, Var * result);

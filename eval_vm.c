@@ -46,7 +46,7 @@ free_vm(vm the_vm, int stack_too)
 
     if (stack_too)
 	for (i = the_vm->top_activ_stack; i >= 0; i--)
-	    free_activation(the_vm->activ_stack[i], 1);
+	    free_activation(&the_vm->activ_stack[i], 1);
     myfree(the_vm->activ_stack, M_VM);
     myfree(the_vm, M_VM);
 }

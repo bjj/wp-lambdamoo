@@ -24,11 +24,11 @@ extern int do_equals(Var, Var);
 extern int compare_integers(int, int);
 extern Var compare_numbers(Var, Var);
 
-extern Var do_add(Var, Var);
-extern Var do_subtract(Var, Var);
-extern Var do_multiply(Var, Var);
-extern Var do_divide(Var, Var);
-extern Var do_modulus(Var, Var);
+extern Var do_add(Var *, Var *);
+extern Var do_subtract(Var *, Var *);
+extern Var do_multiply(Var *, Var *);
+extern Var do_divide(Var *, Var *);
+extern Var do_modulus(Var *, Var *);
 extern Var do_power(Var, Var);
 
 /* 

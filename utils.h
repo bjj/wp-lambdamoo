@@ -37,24 +37,23 @@ extern int verbcasecmp(const char *verb, const char *word);
 
 extern unsigned str_hash(const char *);
 
-extern void complex_free_var(Var);
-extern Var complex_var_ref(Var);
-extern Var complex_var_dup(Var);
+extern void complex_free_var(Var *);
+extern void complex_var_ref(Var *);
+extern void complex_var_dup(Var *);
 extern int var_refcount(Var);
 
 static inline void
 free_var(Var v)
 {
     if (v.type & TYPE_COMPLEX_FLAG)
-	complex_free_var(v);
+	complex_free_var(&v);
 }
 
 static inline Var
 var_ref(Var v)
 {
     if (v.type & TYPE_COMPLEX_FLAG)
-	return complex_var_ref(v);
-    else
+	complex_var_ref(&v);
 	return v;
 }
 
@@ -62,8 +61,7 @@ static inline Var
 var_dup(Var v)
 {
     if (v.type & TYPE_COMPLEX_FLAG)
-	return complex_var_dup(v);
-    else
+	complex_var_dup(&v);
 	return v;
 }
 

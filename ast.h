@@ -95,6 +95,32 @@ enum Expr_Kind {
     SizeOf_Expr_Kind		/* The last element is also the number of elements... */
 };
 
+struct Expr_Attr {
+	unsigned short typemask;
+	unsigned short typemask_put;	/* for EXPR_ID just before PUT */
+	unsigned value_serial;		/* only for EXPR_ID. for lvalue, new serial */
+
+	unsigned in_try:1;
+	unsigned last_use:1;		/* only for EXPR_ID */
+	unsigned guaranteed:1;
+	unsigned side_effecting:1;
+	unsigned idempotent:1;
+	unsigned direct_var_rd:1;
+	unsigned direct_var_wr:1;
+	unsigned constant:1;
+	unsigned known_true:1;
+};
+
+struct Stmt_Range_Attr {
+	unsigned loopvar_typemask;
+};
+struct Stmt_Attr {
+	unsigned in_try:1;
+	union {
+		struct Stmt_Range_Attr range;
+	} u;
+};
+
 union Expr_Data {
     Var var;
     int id;
@@ -112,12 +138,15 @@ union Expr_Data {
 struct Expr {
     enum Expr_Kind kind;
     union Expr_Data e;
+    struct Expr_Attr a;
 };
 
 struct Cond_Arm {
     Cond_Arm *next;
     Expr *condition;
     Stmt *stmt;
+    /* This field is for convenience during code generation and decompiling */
+    void *reloc;
 };
 
 struct Except_Arm {
@@ -189,6 +218,7 @@ struct Stmt {
     Stmt *next;
     enum Stmt_Kind kind;
     union Stmt_Data s;
+    struct Stmt_Attr a;
 };
 
 
@@ -206,6 +236,11 @@ extern Except_Arm *alloc_except(int, Arg_List *, Stmt *);
 extern Scatter *alloc_scatter(enum Scatter_Kind, int, Expr *);
 extern char *alloc_string(const char *);
 extern double *alloc_float(double);
+extern Expr *copy_expr(Expr *);
+extern Arg_List * copy_arg_list(Arg_List * args);
+extern void free_expr(Expr *);
+extern void free_arg_list(Arg_List *);
+extern Stmt *copy_stmt(Stmt *);
 
 extern void dealloc_node(void *);
 extern void dealloc_string(char *);

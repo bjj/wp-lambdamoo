@@ -43,7 +43,7 @@ refcount_overhead(Memory_Type type)
 	/* for systems with picky double alignment */
 	return MAX(sizeof(int), sizeof(double));
     case M_STRING:
-	return sizeof(int);
+	return sizeof(int) + sizeof(int);
     case M_LIST:
 	/* for systems with picky pointer alignment */
 	return MAX(sizeof(int), sizeof(Var *));
@@ -82,6 +82,8 @@ mymalloc(unsigned size, Memory_Type type)
     if (offs) {
 	memptr += offs;
 	((int *) memptr)[-1] = 1;
+	if (type == M_STRING)
+	    ((int *) memptr)[-2] = size - 1;
     }
     return memptr;
 }
@@ -108,7 +110,7 @@ str_dup(const char *s)
 	addref(emptystring);
 	return emptystring;
     } else {
-	r = (char *) mymalloc(strlen(s) + 1, M_STRING);
+	r = (char *) mymalloc(strlen(s) + 1, M_STRING); /* NO MEMO HERE */
 	strcpy(r, s);
     }
     return r;

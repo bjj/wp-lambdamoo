@@ -127,82 +127,77 @@ verbcasecmp(const char *verb, const char *word)
 unsigned
 str_hash(const char *s)
 {
-    unsigned ans = 0;
-    int i, len = strlen(s), offset = 0;
+    register unsigned ans = 0;
 
-    for (i = 0; i < len; i++) {
-	ans = ans ^ (cmap[(unsigned char) s[i]] << offset++);
-	if (offset == 25)
-	    offset = 0;
+    while (*s) {
+	ans = (ans << 3) + (ans >> 28) + cmap[(unsigned char) *s++];
     }
     return ans;
 }
 
 void
-complex_free_var(Var v)
+complex_free_var(Var *v)
 {
     int i;
 
-    switch ((int) v.type) {
+    switch ((int) v->type) {
     case TYPE_STR:
-	if (v.v.str)
-	    free_str(v.v.str);
+	if (v->v.str)
+	    free_str(v->v.str);
 	break;
     case TYPE_LIST:
-	if (delref(v.v.list) == 0) {
+	if (delref(v->v.list) == 0) {
 	    Var *pv;
 
-	    for (i = v.v.list[0].v.num, pv = v.v.list + 1; i > 0; i--, pv++)
+	    for (i = v->v.list[0].v.num, pv = v->v.list + 1; i > 0; i--, pv++)
 		free_var(*pv);
-	    myfree(v.v.list, M_LIST);
+	    myfree(v->v.list, M_LIST);
 	}
 	break;
     case TYPE_FLOAT:
-	if (delref(v.v.fnum) == 0)
-	    myfree(v.v.fnum, M_FLOAT);
+	if (delref(v->v.fnum) == 0)
+	    myfree(v->v.fnum, M_FLOAT);
 	break;
     }
 }
 
-Var
-complex_var_ref(Var v)
+void
+complex_var_ref(Var *v)
 {
-    switch ((int) v.type) {
+    switch ((int) v->type) {
     case TYPE_STR:
-	addref(v.v.str);
+	addref(v->v.str);
 	break;
     case TYPE_LIST:
-	addref(v.v.list);
+	addref(v->v.list);
 	break;
     case TYPE_FLOAT:
-	addref(v.v.fnum);
+	addref(v->v.fnum);
 	break;
     }
-    return v;
 }
 
-Var
-complex_var_dup(Var v)
+void
+complex_var_dup(Var *v)
 {
     int i;
     Var newlist;
 
-    switch ((int) v.type) {
+    switch ((int) v->type) {
     case TYPE_STR:
-	v.v.str = str_dup(v.v.str);
+	v->v.str = str_dup(v->v.str);
 	break;
     case TYPE_LIST:
-	newlist = new_list(v.v.list[0].v.num);
-	for (i = 1; i <= v.v.list[0].v.num; i++) {
-	    newlist.v.list[i] = var_ref(v.v.list[i]);
+	newlist = new_list(v->v.list[0].v.num);
+	for (i = 1; i <= v->v.list[0].v.num; i++) {
+	    newlist.v.list[i] = var_ref(v->v.list[i]);
 	}
-	v.v.list = newlist.v.list;
+	*v = newlist;
 	break;
     case TYPE_FLOAT:
-	v = new_float(*v.v.fnum);
+	*v = new_float(*v->v.fnum);
 	break;
     }
-    return v;
 }
 
 /* could be inlined and use complex_etc like the others, but this should
@@ -280,7 +275,7 @@ char *
 strsub(const char *source, const char *what, const char *with, int case_counts)
 {
     static Stream *str = 0;
-    int lwhat = strlen(what);
+    int lwhat = memo_strlen(what);
 
     if (str == 0)
 	str = new_stream(100);
@@ -301,9 +296,9 @@ int
 strindex(const char *source, const char *what, int case_counts)
 {
     const char *s, *e;
-    int lwhat = strlen(what);
+    int lwhat = memo_strlen(what);
 
-    for (s = source, e = source + strlen(source) - lwhat; s <= e; s++) {
+    for (s = source, e = source + memo_strlen(source) - lwhat; s <= e; s++) {
 	if (!(case_counts ? strncmp(s, what, lwhat)
 	      : mystrncasecmp(s, what, lwhat))) {
 	    return s - source + 1;
@@ -316,9 +311,9 @@ int
 strrindex(const char *source, const char *what, int case_counts)
 {
     const char *s;
-    int lwhat = strlen(what);
+    int lwhat = memo_strlen(what);
 
-    for (s = source + strlen(source) - lwhat; s >= source; s--) {
+    for (s = source + memo_strlen(source) - lwhat; s >= source; s--) {
 	if (!(case_counts ? strncmp(s, what, lwhat)
 	      : mystrncasecmp(s, what, lwhat))) {
 	    return s - source + 1;
@@ -367,7 +362,7 @@ value_bytes(Var v)
 
     switch (v.type) {
     case TYPE_STR:
-	size += strlen(v.v.str) + 1;
+	size += memo_strlen(v.v.str) + 1;
 	break;
     case TYPE_FLOAT:
 	size += sizeof(double);

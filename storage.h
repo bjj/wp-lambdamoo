@@ -33,7 +33,7 @@ typedef enum Memory_Type {
     M_RT_STACK, M_RT_ENV, M_BI_FUNC_DATA, M_VM,
 
     M_REF_ENTRY, M_REF_TABLE, M_VC_ENTRY, M_VC_TABLE, M_STRING_PTRS,
-    M_INTERN_POINTER, M_INTERN_ENTRY, M_INTERN_HUNK,
+    M_INTERN_POINTER, M_INTERN_ENTRY, M_INTERN_HUNK, M_CODE_OPT,
 
     Sizeof_Memory_Type
 
@@ -53,6 +53,17 @@ free_str(const char *s)
     if (delref(s) == 0)
 	myfree((void *) s, M_STRING);
 }
+
+#ifdef NOT_NECESSARY
+/*
+ * Could do it lazily, but MOO already knows on alloc.
+ */
+#define memo_set_strlen(X, N) (((int *)(X))[-2] = N)
+#define memo_strlen(X) (memo_get_strlen(X) != -1 ? \
+			memo_get_strlen(X) : memo_set_strlen(X, strlen(X)))
+#endif
+#define memo_get_strlen(X) (((int *)(X))[-2])
+#define memo_strlen(X) memo_get_strlen(X)
 
 #endif				/* Storage_h */
 

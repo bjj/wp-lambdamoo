@@ -343,8 +343,8 @@ strrangeset(Var base, int from, int to, Var value)
 {
     /* base and value are free'd */
     int index, offset = 0;
-    int val_len = strlen(value.v.str);
-    int base_len = strlen(base.v.str);
+    int val_len = memo_strlen(value.v.str);
+    int base_len = memo_strlen(base.v.str);
     int lenleft = (from > 1) ? from - 1 : 0;
     int lenmiddle = val_len;
     int lenright = (base_len > to) ? base_len - to : 0;
@@ -409,14 +409,18 @@ static package
 bf_length(Var arglist, Byte next, void *vdata, Objid progr)
 {
     Var r;
-    switch (arglist.v.list[1].type) {
+    switch (arglist.v.list[1].type) { /* DO NOT ADD TO THIS unless you uptdate
+				       * optimize.c, which knows what args
+				       * this special-case TYPE_ANY builtin
+				       * really takes!
+				       */
     case TYPE_LIST:
 	r.type = TYPE_INT;
 	r.v.num = arglist.v.list[1].v.list[0].v.num;
 	break;
     case TYPE_STR:
 	r.type = TYPE_INT;
-	r.v.num = strlen(arglist.v.list[1].v.str);
+	r.v.num = memo_strlen(arglist.v.list[1].v.str);
 	break;
     default:
 	free_var(arglist);
@@ -565,10 +569,10 @@ bf_crypt(Var arglist, Byte next, void *vdata, Objid progr)
     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789./";
     extern const char *crypt(const char *, const char *);
 
-    if (arglist.v.list[0].v.num == 1 || strlen(arglist.v.list[2].v.str) < 2) {
+    if (arglist.v.list[0].v.num == 1 || memo_strlen(arglist.v.list[2].v.str) < 2) {
 	/* provide a random 2-letter salt, works with old and new crypts */
-	salt[0] = saltstuff[RANDOM() % (int) strlen(saltstuff)];
-	salt[1] = saltstuff[RANDOM() % (int) strlen(saltstuff)];
+	salt[0] = saltstuff[RANDOM() % (int) memo_strlen(saltstuff)];
+	salt[1] = saltstuff[RANDOM() % (int) memo_strlen(saltstuff)];
 	salt[2] = '\0';
 	saltp = salt;
     } else {
@@ -825,7 +829,7 @@ check_subs_list(Var subs)
 	|| subs.v.list[4].type != TYPE_STR)
 	return 1;
     subj = subs.v.list[4].v.str;
-    subj_length = strlen(subj);
+    subj_length = memo_strlen(subj);
     if (invalid_pair(subs.v.list[1].v.num, subs.v.list[2].v.num,
 		     subj_length))
 	return 1;
@@ -855,7 +859,7 @@ bf_substitute(Var arglist, Byte next, void *vdata, Objid progr)
     char c = '\0';
 
     template = arglist.v.list[1].v.str;
-    template_length = strlen(template);
+    template_length = memo_strlen(template);
     subs = arglist.v.list[2];
 
     if (check_subs_list(subs)) {
@@ -863,7 +867,7 @@ bf_substitute(Var arglist, Byte next, void *vdata, Objid progr)
 	return make_error_pack(E_INVARG);
     }
     subject = subs.v.list[4].v.str;
-    subject_length = strlen(subject);
+    subject_length = memo_strlen(subject);
 
     s = new_stream(template_length);
     ans.type = TYPE_STR;
@@ -964,7 +968,7 @@ bf_string_hash(Var arglist, Byte next, void *vdata, Objid progr)
     const char *str = arglist.v.list[1].v.str;
 
     r.type = TYPE_STR;
-    r.v.str = hash_bytes(str, strlen(str));
+    r.v.str = hash_bytes(str, memo_strlen(str));
     free_var(arglist);
     return make_var_pack(r);
 }
@@ -976,7 +980,7 @@ bf_value_hash(Var arglist, Byte next, void *vdata, Objid progr)
     const char *lit = value_to_literal(arglist.v.list[1]);
 
     r.type = TYPE_STR;
-    r.v.str = hash_bytes(lit, strlen(lit));
+    r.v.str = hash_bytes(lit, memo_strlen(lit));
     free_var(arglist);
     return make_var_pack(r);
 }
@@ -1102,39 +1106,50 @@ bf_encode_binary(Var arglist, Byte next, void *vdata, Objid progr)
 void
 register_list(void)
 {
-    register_function("value_bytes", 1, 1, bf_value_bytes, TYPE_ANY);
-    register_function("value_hash", 1, 1, bf_value_hash, TYPE_ANY);
-    register_function("string_hash", 1, 1, bf_string_hash, TYPE_STR);
-    register_function("binary_hash", 1, 1, bf_binary_hash, TYPE_STR);
-    register_function("decode_binary", 1, 2, bf_decode_binary,
+    register_function_rt("value_bytes", TYPE_INT, 1, 1, bf_value_bytes, TYPE_ANY);
+    register_function_rt("value_hash", TYPE_INT, 1, 1, bf_value_hash, TYPE_ANY);
+    register_function_rt("string_hash", TYPE_STR, 1, 1, bf_string_hash, TYPE_STR);
+    register_function_rt("binary_hash", TYPE_STR, 1, 1, bf_binary_hash, TYPE_STR);
+    register_function_rt("decode_binary", TYPE_LIST, 1, 2, bf_decode_binary,
 		      TYPE_STR, TYPE_ANY);
-    register_function("encode_binary", 0, -1, bf_encode_binary);
+    register_function_rt("encode_binary", TYPE_STR, 0, -1, bf_encode_binary);
     /* list */
     register_function("length", 1, 1, bf_length, TYPE_ANY);
-    register_function("setadd", 2, 2, bf_setadd, TYPE_LIST, TYPE_ANY);
-    register_function("setremove", 2, 2, bf_setremove, TYPE_LIST, TYPE_ANY);
-    register_function("listappend", 2, 3, bf_listappend,
+    register_function_rt("setadd", TYPE_LIST, 2, 2, bf_setadd,
+			TYPE_LIST, TYPE_ANY);
+    register_function_rt("setremove", TYPE_LIST, 2, 2, bf_setremove,
+			TYPE_LIST, TYPE_ANY);
+    register_function_rt("listappend", TYPE_LIST, 2, 3, bf_listappend,
 		      TYPE_LIST, TYPE_ANY, TYPE_INT);
-    register_function("listinsert", 2, 3, bf_listinsert,
+    register_function_rt("listinsert", TYPE_LIST, 2, 3, bf_listinsert,
 		      TYPE_LIST, TYPE_ANY, TYPE_INT);
-    register_function("listdelete", 2, 2, bf_listdelete, TYPE_LIST, TYPE_INT);
-    register_function("listset", 3, 3, bf_listset,
+    register_function_rt("listdelete", TYPE_LIST, 2, 2, bf_listdelete,
+			TYPE_LIST, TYPE_INT);
+    register_function_rt("listset", TYPE_LIST, 3, 3, bf_listset,
 		      TYPE_LIST, TYPE_ANY, TYPE_INT);
-    register_function("equal", 2, 2, bf_equal, TYPE_ANY, TYPE_ANY);
-    register_function("is_member", 2, 2, bf_is_member, TYPE_ANY, TYPE_LIST);
+    register_function_rt("equal", TYPE_INT, 2, 2, bf_equal,
+			TYPE_ANY, TYPE_ANY);
+    register_function_rt("is_member", TYPE_INT, 2, 2, bf_is_member,
+			TYPE_ANY, TYPE_LIST);
 
     /* string */
-    register_function("tostr", 0, -1, bf_tostr);
-    register_function("toliteral", 1, 1, bf_toliteral, TYPE_ANY);
+    register_function_rt("tostr", TYPE_STR, 0, -1, bf_tostr);
+    register_function_rt("toliteral", TYPE_STR, 1, 1, bf_toliteral, TYPE_ANY);
     setup_pattern_cache();
-    register_function("match", 2, 3, bf_match, TYPE_STR, TYPE_STR, TYPE_ANY);
-    register_function("rmatch", 2, 3, bf_rmatch, TYPE_STR, TYPE_STR, TYPE_ANY);
-    register_function("substitute", 2, 2, bf_substitute, TYPE_STR, TYPE_LIST);
-    register_function("crypt", 1, 2, bf_crypt, TYPE_STR, TYPE_STR);
-    register_function("index", 2, 3, bf_index, TYPE_STR, TYPE_STR, TYPE_ANY);
-    register_function("rindex", 2, 3, bf_rindex, TYPE_STR, TYPE_STR, TYPE_ANY);
-    register_function("strcmp", 2, 2, bf_strcmp, TYPE_STR, TYPE_STR);
-    register_function("strsub", 3, 4, bf_strsub,
+    register_function_rt("match", TYPE_LIST, 2, 3, bf_match,
+		TYPE_STR, TYPE_STR, TYPE_ANY);
+    register_function_rt("rmatch", TYPE_LIST, 2, 3, bf_rmatch,
+		TYPE_STR, TYPE_STR, TYPE_ANY);
+    register_function_rt("substitute", TYPE_STR, 2, 2, bf_substitute,
+		TYPE_STR, TYPE_LIST);
+    register_function_rt("crypt", TYPE_STR, 1, 2, bf_crypt, TYPE_STR, TYPE_STR);
+    register_function_rt("index", TYPE_INT, 2, 3, bf_index,
+			TYPE_STR, TYPE_STR, TYPE_ANY);
+    register_function_rt("rindex", TYPE_INT, 2, 3, bf_rindex,
+			TYPE_STR, TYPE_STR, TYPE_ANY);
+    register_function_rt("strcmp", TYPE_INT, 2, 2, bf_strcmp,
+			TYPE_STR, TYPE_STR);
+    register_function_rt("strsub", TYPE_STR, 3, 4, bf_strsub,
 		      TYPE_STR, TYPE_STR, TYPE_STR, TYPE_ANY);
 }
 

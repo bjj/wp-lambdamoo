@@ -1176,6 +1176,7 @@ main(int argc, char **argv)
     slistener *l;
 
     init_cmdline(argc, argv);
+    init_jit();
 
     argc--;
     argv++;

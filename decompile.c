@@ -972,6 +972,7 @@ find_line_number(Program * prog, int vector, int pc)
 {
     Stmt *tree;
 
+return 42;
     if (prog->cached_lineno_pc == pc && prog->cached_lineno_vec == vector)
 	return prog->cached_lineno;
 

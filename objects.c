@@ -595,8 +595,8 @@ bf_object_bytes(Var arglist, Byte next, void *vdata, Objid progr)
 void
 register_objects(void)
 {
-    register_function("toobj", 1, 1, bf_toobj, TYPE_ANY);
-    register_function("typeof", 1, 1, bf_typeof, TYPE_ANY);
+    register_function_rt("toobj", TYPE_OBJ, 1, 1, bf_toobj, TYPE_ANY);
+    register_function_rt("typeof", TYPE_INT, 1, 1, bf_typeof, TYPE_ANY);
     register_function_with_read_write("create", 1, 2, bf_create,
 				      bf_create_read, bf_create_write,
 				      TYPE_OBJ, TYPE_OBJ);
@@ -604,12 +604,12 @@ register_objects(void)
 				      bf_recycle_read, bf_recycle_write,
 				      TYPE_OBJ);
     register_function("object_bytes", 1, 1, bf_object_bytes, TYPE_OBJ);
-    register_function("valid", 1, 1, bf_valid, TYPE_OBJ);
-    register_function("parent", 1, 1, bf_parent, TYPE_OBJ);
-    register_function("children", 1, 1, bf_children, TYPE_OBJ);
+    register_function_rt("valid", TYPE_INT, 1, 1, bf_valid, TYPE_OBJ);
+    register_function_rt("parent", TYPE_OBJ, 1, 1, bf_parent, TYPE_OBJ);
+    register_function_rt("children", TYPE_LIST, 1, 1, bf_children, TYPE_OBJ);
     register_function("chparent", 2, 2, bf_chparent, TYPE_OBJ, TYPE_OBJ);
-    register_function("max_object", 0, 0, bf_max_object);
-    register_function("players", 0, 0, bf_players);
+    register_function_rt("max_object", TYPE_OBJ,  0, 0, bf_max_object);
+    register_function_rt("players", TYPE_LIST, 0, 0, bf_players);
     register_function("is_player", 1, 1, bf_is_player, TYPE_OBJ);
     register_function("set_player_flag", 2, 2, bf_set_player_flag,
 		      TYPE_OBJ, TYPE_ANY);

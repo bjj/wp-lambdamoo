@@ -485,7 +485,7 @@ db_find_callable_verb(Objid oid, const char *verb)
 	first_parent_with_verbs = NOTHING;
     }
 
-    hash = str_hash(verb) ^ (~first_parent_with_verbs);		/* ewww, but who cares */
+    hash = str_hash(verb) ^ first_parent_with_verbs;  /* ewww, but who cares */
     bucket = hash % vc_size;
 
     for (vc = vc_table[bucket]; vc; vc = vc->next) {

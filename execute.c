@@ -42,39 +42,34 @@
 #include "utils.h"
 #include "version.h"
 
+#define STATIC /* XXX expose to jit.c */
+
 /* the following globals are the guts of the virtual machine: */
-static activation *activ_stack = 0;
-static int max_stack_size = 0;
-static unsigned top_activ_stack;	/* points to top-of-stack
+STATIC activation *activ_stack = 0;
+STATIC int max_stack_size = 0;
+STATIC unsigned top_activ_stack;	/* points to top-of-stack
 					   (last-occupied-slot),
 					   not next-empty-slot */
-static int root_activ_vector;	/* root_activ_vector == MAIN_VECTOR
+STATIC int root_activ_vector;	/* root_activ_vector == MAIN_VECTOR
 				   iff root activation is main
 				   vector */
 
 /* these globals are not part of the vm because they get re-initialized
    after a suspend */
-static int ticks_remaining;
+STATIC int ticks_remaining;
 int task_timed_out;
-static int interpreter_is_running = 0;
-static Timer_ID task_alarm_id;
-static task_kind current_task_kind;
+STATIC int interpreter_is_running = 0;
+STATIC Timer_ID task_alarm_id;
+STATIC task_kind current_task_kind;
 
-static const char *handler_verb_name;	/* For in-DB traceback handling */
-static Var handler_verb_args;
+STATIC const char *handler_verb_name;	/* For in-DB traceback handling */
+STATIC Var handler_verb_args;
 
 /* macros to ease indexing into activation stack */
 #define RUN_ACTIV     activ_stack[top_activ_stack]
 #define CALLER_ACTIV  activ_stack[top_activ_stack - 1]
 
 /**** error handling ****/
-
-typedef enum {			/* Reasons for executing a FINALLY handler */
-    /* These constants are stored in the DB, so don't change the order... */
-    FIN_FALL_THRU, FIN_RAISE, FIN_UNCAUGHT, FIN_RETURN,
-    FIN_ABORT,			/* This doesn't actually get you into a FINALLY... */
-    FIN_EXIT
-} Finally_Reason;
 
 /*
  * Keep a pool of the common size rt_stacks around to avoid beating up on
@@ -83,10 +78,10 @@ typedef enum {			/* Reasons for executing a FINALLY handler */
  * with a powers-of-two malloc (while leaving some room for mymalloc
  * overhead, if any).
  */
-static Var *rt_stack_quick;
+STATIC Var *rt_stack_quick;
 #define RT_STACK_QUICKSIZE	15
 
-static void
+STATIC void
 alloc_rt_stack(activation * a, int size)
 {
     Var *res;
@@ -101,7 +96,7 @@ alloc_rt_stack(activation * a, int size)
     a->rt_stack_size = size;
 }
 
-static void
+STATIC void
 free_rt_stack(activation * a)
 {
     Var *stack = a->base_rt_stack;
@@ -154,9 +149,9 @@ output_to_log(const char *line)
     oklog("%s\n", line);
 }
 
-static Var backtrace_list;
+STATIC Var backtrace_list;
 
-static void
+STATIC void
 output_to_list(const char *line)
 {
     Var str;
@@ -166,7 +161,7 @@ output_to_list(const char *line)
     backtrace_list = listappend(backtrace_list, str);
 }
 
-static Var
+STATIC Var
 error_backtrace_list(const char *msg)
 {
     backtrace_list = new_list(0);
@@ -174,7 +169,7 @@ error_backtrace_list(const char *msg)
     return backtrace_list;
 }
 
-static enum error
+STATIC enum error
 suspend_task(package p)
 {
     vm the_vm = new_vm(current_task_id, top_activ_stack + 1);
@@ -194,9 +189,9 @@ suspend_task(package p)
     return e;
 }
 
-static int raise_error(package p, enum outcome *outcome);
+STATIC int raise_error(package *p, enum outcome *outcome);
 
-static int
+STATIC int
 unwind_stack(Finally_Reason why, Var value, enum outcome *outcome)
 {
     /* Returns true iff the entire stack was unwound and the interpreter
@@ -261,7 +256,7 @@ unwind_stack(Finally_Reason why, Var value, enum outcome *outcome)
 	    bi_func_data = a->bi_func_data;
 	}
 	player = a->player;
-	free_activation(*a, 0);	/* 0 == don't free bi_func_data */
+	free_activation(a, 0);	/* 0 == don't free bi_func_data */
 
 	if (top_activ_stack == 0) {	/* done */
 	    if (outcome)
@@ -285,7 +280,7 @@ unwind_stack(Finally_Reason why, Var value, enum outcome *outcome)
 		    return 0;
 		case BI_RAISE:
 		    if (a->debug)
-			return raise_error(p, outcome);
+			return raise_error(&p, outcome);
 		    else {
 			*(a->top_rt_stack++) = p.u.raise.code;
 			free_str(p.u.raise.msg);
@@ -341,7 +336,7 @@ unwind_stack(Finally_Reason why, Var value, enum outcome *outcome)
 		    case BI_KILL:
 			break;
 		    case BI_CALL:
-			free_activation(activ_stack[top_activ_stack--], 0);
+			free_activation(&activ_stack[top_activ_stack--], 0);
 			bi_func_pc = p.u.call.pc;
 			bi_func_data = p.u.call.data;
 			break;
@@ -356,7 +351,7 @@ unwind_stack(Finally_Reason why, Var value, enum outcome *outcome)
     }
 }
 
-static int
+STATIC int
 find_handler_activ(Var code)
 {
     /* Returns the index of the hottest activation with an active exception
@@ -380,7 +375,7 @@ find_handler_activ(Var code)
     return -1;
 }
 
-static Var
+STATIC Var
 make_stack_list(activation * stack, int start, int end, int include_end,
 		int root_vector, int line_numbers_too)
 {
@@ -441,7 +436,7 @@ make_stack_list(activation * stack, int start, int end, int include_end,
     return r;
 }
 
-static void
+STATIC void
 save_handler_info(const char *vname, Var args)
 {
     handler_verb_name = vname;
@@ -449,11 +444,11 @@ save_handler_info(const char *vname, Var args)
     handler_verb_args = args;
 }
 
-static int
-raise_error(package p, enum outcome *outcome)
+STATIC int
+raise_error(package *p, enum outcome *outcome)
 {
     /* ASSERT: p.kind == BI_RAISE */
-    int handler_activ = find_handler_activ(p.u.raise.code);
+    int handler_activ = find_handler_activ(p->u.raise.code);
     Finally_Reason why;
     Var value;
 
@@ -463,13 +458,13 @@ raise_error(package p, enum outcome *outcome)
     } else {			/* uncaught exception */
 	why = FIN_UNCAUGHT;
 	value = new_list(5);
-	value.v.list[5] = error_backtrace_list(p.u.raise.msg);
+	value.v.list[5] = error_backtrace_list(p->u.raise.msg);
 	handler_activ = 0;	/* get entire stack in list */
     }
-    value.v.list[1] = p.u.raise.code;
+    value.v.list[1] = p->u.raise.code;
     value.v.list[2].type = TYPE_STR;
-    value.v.list[2].v.str = p.u.raise.msg;
-    value.v.list[3] = p.u.raise.value;
+    value.v.list[2].v.str = p->u.raise.msg;
+    value.v.list[3] = p->u.raise.value;
     value.v.list[4] = make_stack_list(activ_stack, handler_activ,
 				      top_activ_stack, 1,
 				      root_activ_vector, 1);
@@ -481,7 +476,7 @@ raise_error(package p, enum outcome *outcome)
     return unwind_stack(why, value, outcome);
 }
 
-static void
+STATIC void
 abort_task(int is_ticks)
 {
     Var value;
@@ -500,7 +495,7 @@ abort_task(int is_ticks)
 
 /**** activation manipulation ****/
 
-static int
+STATIC int
 push_activation(void)
 {
     if (top_activ_stack < max_stack_size - 1) {
@@ -511,8 +506,9 @@ push_activation(void)
 }
 
 void
-free_activation(activation a, char data_too)
+free_activation(activation *ap, char data_too)
 {
+#define a (*ap)
     Var *i;
 
     free_rt_env(a.rt_env, a.prog->num_var_names);
@@ -529,6 +525,7 @@ free_activation(activation a, char data_too)
     if (data_too && a.bi_func_pc && a.bi_func_data)
 	free_data(a.bi_func_data);
     /* else bi_func_state will be later freed by bi_function */
+#undef a
 }
 
 
@@ -605,7 +602,10 @@ call_verb2(Objid this, const char *vname, Var args, int do_pass)
 
     RUN_ACTIV.rt_env = env = new_rt_env(RUN_ACTIV.prog->num_var_names);
 
+#define NO_STUPID_BUILTIN_VARS
     fill_in_rt_consts(env, program->version);
+#ifndef NO_STUPID_BUILTIN_VARS
+#endif // NO_STUPID_BUILTIN_VARS
 
     set_rt_env_obj(env, SLOT_THIS, this);
     set_rt_env_obj(env, SLOT_CALLER, CALLER_ACTIV.this);
@@ -613,12 +613,14 @@ call_verb2(Objid this, const char *vname, Var args, int do_pass)
 #define ENV_COPY(slot) \
     set_rt_env_var(env, slot, var_ref(CALLER_ACTIV.rt_env[slot]))
 
+#ifndef NO_STUPID_BUILTIN_VARS
     ENV_COPY(SLOT_ARGSTR);
     ENV_COPY(SLOT_DOBJ);
     ENV_COPY(SLOT_DOBJSTR);
     ENV_COPY(SLOT_PREPSTR);
     ENV_COPY(SLOT_IOBJ);
     ENV_COPY(SLOT_IOBJSTR);
+#endif // NO_STUPID_BUILTIN_VARS
 
     if (is_wizard(CALLER_ACTIV.progr) &&
 	(CALLER_ACTIV.rt_env[SLOT_PLAYER].type == TYPE_OBJ))
@@ -637,7 +639,7 @@ call_verb2(Objid this, const char *vname, Var args, int do_pass)
     return E_NONE;
 }
 
-static int
+STATIC int
 rangeset_check(int end, int from, int to)
 {
     if (from > end + 1 || to < 0)
@@ -646,9 +648,10 @@ rangeset_check(int end, int from, int to)
 }
 
 #ifdef IGNORE_PROP_PROTECTED
+STATIC int bi_prop_protected(enum bi_prop prop, Objid progr) { return 0; }
 #define bi_prop_protected(prop, progr) (0)
 #else
-static int
+STATIC int
 bi_prop_protected(enum bi_prop prop, Objid progr)
 {
     const char *pname = 0;	/* silence warning */
@@ -697,7 +700,18 @@ bi_prop_protected(enum bi_prop prop, Objid progr)
   everything is just an entry point to it
 **/
 
-static enum outcome
+Bytecodes *
+current_bytecodes()
+{
+    Bytecodes *bcp;
+
+    bcp = ( (top_activ_stack != 0 || root_activ_vector == MAIN_VECTOR)
+	   ? &RUN_ACTIV.prog->main_vector
+	   : &RUN_ACTIV.prog->fork_vectors[root_activ_vector]);
+    return bcp;
+}
+
+STATIC enum outcome
 run(char raise, enum error resumption_error, Var * result)
 {				/* runs the_vm */
     /* If the returned value is OUTCOME_DONE and RESULT is non-NULL, then
@@ -713,6 +727,12 @@ run(char raise, enum error resumption_error, Var * result)
     Var error_var;
     enum outcome outcome;
 
+if (raise) {
+	package the_err_pack = make_error_pack(resumption_error);
+	if (raise_error(& the_err_pack, 0))
+	    return OUTCOME_ABORTED;
+}
+return jit_run(result);
 /** a bunch of macros that work *ONLY* inside run() **/
 
 /* helping macros about the runtime_stack. */
@@ -755,8 +775,9 @@ do {						\
 #define RAISE_ERROR(the_err) 			\
 do {						\
     if (RUN_ACTIV.debug) { 			\
+	package the_err_pack = make_error_pack(the_err); \
 	STORE_STATE_VARIABLES();		\
-	if (raise_error(make_error_pack(the_err), 0)) \
+	if (raise_error(& the_err_pack, 0)) \
 	    return OUTCOME_ABORTED;		\
 	else {					\
 	    LOAD_STATE_VARIABLES();		\
@@ -961,12 +982,12 @@ do {    						    	\
 			   || (list.type == TYPE_LIST
 		       && index.v.num > list.v.list[0].v.num /* size */ )
 			   || (list.type == TYPE_STR
-			    && index.v.num > (int) strlen(list.v.str))) {
+			    && index.v.num > (int) memo_strlen(list.v.str))) {
 		    free_var(value);
 		    free_var(index);
 		    free_var(list);
 		    PUSH_ERROR(E_RANGE);
-		} else if (list.type == TYPE_STR && strlen(value.v.str) != 1) {
+		} else if (list.type == TYPE_STR && memo_strlen(value.v.str) != 1) {
 		    free_var(value);
 		    free_var(index);
 		    free_var(list);
@@ -1140,16 +1161,16 @@ do {    						    	\
 		    && (rhs.type == TYPE_INT || rhs.type == TYPE_FLOAT)) {
 		    switch (op) {
 		    case OP_MULT:
-			ans = do_multiply(lhs, rhs);
+			ans = do_multiply(&lhs, &rhs);
 			break;
 		    case OP_MINUS:
-			ans = do_subtract(lhs, rhs);
+			ans = do_subtract(&lhs, &rhs);
 			break;
 		    case OP_DIV:
-			ans = do_divide(lhs, rhs);
+			ans = do_divide(&lhs, &rhs);
 			break;
 		    case OP_MOD:
-			ans = do_modulus(lhs, rhs);
+			ans = do_modulus(&lhs, &rhs);
 			break;
 		    default:
 			errlog("RUN: Impossible opcode in arith ops: %d\n", op);
@@ -1176,11 +1197,11 @@ do {    						    	\
 		lhs = POP();
 		if ((lhs.type == TYPE_INT || lhs.type == TYPE_FLOAT)
 		    && (rhs.type == TYPE_INT || rhs.type == TYPE_FLOAT))
-		    ans = do_add(lhs, rhs);
+		    ans = do_add(&lhs, &rhs);
 		else if (lhs.type == TYPE_STR && rhs.type == TYPE_STR) {
 		    char *str;
 
-		    str = mymalloc((strlen(rhs.v.str) + strlen(lhs.v.str) + 1)
+		    str = mymalloc((memo_strlen(rhs.v.str) + memo_strlen(lhs.v.str) + 1)
 				   * sizeof(char), M_STRING);
 		    sprintf(str, "%s%s", lhs.v.str, rhs.v.str);
 		    ans.type = TYPE_STR;
@@ -1272,7 +1293,7 @@ do {    						    	\
 		    }
 		} else {	/* list.type == TYPE_STR */
 		    if (index.v.num <= 0
-			|| index.v.num > (int) strlen(list.v.str)) {
+			|| index.v.num > (int) memo_strlen(list.v.str)) {
 			free_var(index);
 			free_var(list);
 			PUSH_ERROR(E_RANGE);
@@ -1316,7 +1337,7 @@ do {    						    	\
 		    free_var(from);
 		    PUSH_ERROR(E_TYPE);
 		} else {
-		    int len = (base.type == TYPE_STR ? strlen(base.v.str)
+		    int len = (base.type == TYPE_STR ? memo_strlen(base.v.str)
 			       : base.v.list[0].v.num);
 		    if (from.v.num <= to.v.num
 			&& (from.v.num <= 0 || from.v.num > len
@@ -1552,9 +1573,9 @@ do {    						    	\
 		if (args.type != TYPE_LIST || verb.type != TYPE_STR
 		    || obj.type != TYPE_OBJ)
 		    err = E_TYPE;
-		else if (!valid(obj.v.obj))
+		else if (!valid(obj.v.obj)) {
 		    err = E_INVIND;
-		else {
+		} else {
 		    STORE_STATE_VARIABLES();
 		    err = call_verb2(obj.v.obj, verb.v.str, args, 0);
 		    /* if there is no error, RUN_ACTIV is now the CALLEE's.
@@ -1620,7 +1641,7 @@ do {    						    	\
 			break;
 		    case BI_RAISE:
 			if (RUN_ACTIV.debug) {
-			    if (raise_error(p, 0))
+			    if (raise_error(&p, 0))
 				return OUTCOME_ABORTED;
 			    else
 				LOAD_STATE_VARIABLES();
@@ -1682,7 +1703,7 @@ do {    						    	\
 			    free_var(value);
 			    PUSH_ERROR(E_TYPE);
 			} else if (rangeset_check(base.type == TYPE_STR
-						  ? strlen(base.v.str)
+						  ? memo_strlen(base.v.str)
 						  : base.v.list[0].v.num,
 						  from.v.num, to.v.num)) {
 			    free_var(base);
@@ -1705,7 +1726,7 @@ do {    						    	\
 			v.type = TYPE_INT;
 			item = RUN_ACTIV.base_rt_stack[i];
 			if (item.type == TYPE_STR) {
-			    v.v.num = strlen(item.v.str);
+			    v.v.num = memo_strlen(item.v.str);
 			    PUSH(v);
 			} else if (item.type == TYPE_LIST) {
 			    v.v.num = item.v.list[0].v.num;
@@ -2071,16 +2092,16 @@ do {    						    	\
 
 /**** manipulating data of task ****/
 
-static int timeouts_enabled = 1;	/* set to 0 in debugger to disable
+STATIC int timeouts_enabled = 1;	/* set to 0 in debugger to disable
 					   timeouts */
 
-static void
+STATIC void
 task_timeout(Timer_ID id, Timer_Data data)
 {
     task_timed_out = timeouts_enabled;
 }
 
-static Timer_ID
+STATIC Timer_ID
 setup_task_execution_limits(int seconds, int ticks)
 {
     task_alarm_id = set_virtual_timer(seconds < 1 ? 1 : seconds,
@@ -2152,7 +2173,7 @@ caller()
     return RUN_ACTIV.this;
 }
 
-static void
+STATIC void
 check_activ_stack_size(int max)
 {
     if (max_stack_size != max) {
@@ -2164,7 +2185,7 @@ check_activ_stack_size(int max)
     }
 }
 
-static int
+STATIC int
 current_max_stack_size(void)
 {
     int max = server_int_option("max_stack_depth", DEFAULT_MAX_STACK_DEPTH);
@@ -2181,7 +2202,7 @@ current_max_stack_size(void)
 
 /* procedure to create a new task */
 
-static enum outcome
+STATIC enum outcome
 do_task(Program * prog, int which_vector, Var * result, int do_db_tracebacks)
 {				/* which vector determines the vector for the root_activ.
 				   a forked task can also have which_vector == MAIN_VECTOR.
@@ -2377,7 +2398,7 @@ struct cf_state {
     void *data;
 };
 
-static package
+STATIC package
 bf_call_function(Var arglist, Byte next, void *vdata, Objid progr)
 {
     package p;
@@ -2412,7 +2433,7 @@ bf_call_function(Var arglist, Byte next, void *vdata, Objid progr)
     return p;
 }
 
-static void
+STATIC void
 bf_call_function_write(void *data)
 {
     struct cf_state *s = data;
@@ -2422,7 +2443,7 @@ bf_call_function_write(void *data)
     write_bi_func_data(s->data, s->fnum);
 }
 
-static void *
+STATIC void *
 bf_call_function_read(void)
 {
     struct cf_state *s = alloc_data(sizeof(struct cf_state));
@@ -2440,7 +2461,7 @@ bf_call_function_read(void)
     return 0;
 }
 
-static package
+STATIC package
 bf_raise(Var arglist, Byte next, void *vdata, Objid progr)
 {
     package p;
@@ -2461,7 +2482,7 @@ bf_raise(Var arglist, Byte next, void *vdata, Objid progr)
     return p;
 }
 
-static package
+STATIC package
 bf_suspend(Var arglist, Byte next, void *vdata, Objid progr)
 {
     static int seconds;
@@ -2479,7 +2500,7 @@ bf_suspend(Var arglist, Byte next, void *vdata, Objid progr)
 	return make_suspend_pack(enqueue_suspended_task, &seconds);
 }
 
-static package
+STATIC package
 bf_read(Var arglist, Byte next, void *vdata, Objid progr)
 {
     int argc = arglist.v.list[0].v.num;
@@ -2517,7 +2538,7 @@ bf_read(Var arglist, Byte next, void *vdata, Objid progr)
     return make_suspend_pack(make_reading_task, &connection);
 }
 
-static package
+STATIC package
 bf_seconds_left(Var arglist, Byte next, void *vdata, Objid progr)
 {
     Var r;
@@ -2527,7 +2548,7 @@ bf_seconds_left(Var arglist, Byte next, void *vdata, Objid progr)
     return make_var_pack(r);
 }
 
-static package
+STATIC package
 bf_ticks_left(Var arglist, Byte next, void *vdata, Objid progr)
 {
     Var r;
@@ -2537,7 +2558,7 @@ bf_ticks_left(Var arglist, Byte next, void *vdata, Objid progr)
     return make_var_pack(r);
 }
 
-static package
+STATIC package
 bf_pass(Var arglist, Byte next, void *vdata, Objid progr)
 {
     enum error e = call_verb2(RUN_ACTIV.this, RUN_ACTIV.verb, arglist, 1);
@@ -2549,7 +2570,7 @@ bf_pass(Var arglist, Byte next, void *vdata, Objid progr)
     return make_error_pack(e);
 }
 
-static package
+STATIC package
 bf_set_task_perms(Var arglist, Byte next, void *vdata, Objid progr)
 {				/* (player) */
     /* warning!!  modifies top activation */
@@ -2564,7 +2585,7 @@ bf_set_task_perms(Var arglist, Byte next, void *vdata, Objid progr)
     return no_var_pack();
 }
 
-static package
+STATIC package
 bf_caller_perms(Var arglist, Byte next, void *vdata, Objid progr)
 {				/* () */
     Var r;
@@ -2577,7 +2598,7 @@ bf_caller_perms(Var arglist, Byte next, void *vdata, Objid progr)
     return make_var_pack(r);
 }
 
-static package
+STATIC package
 bf_callers(Var arglist, Byte next, void *vdata, Objid progr)
 {
     int line_numbers_too = 0;
@@ -2590,7 +2611,7 @@ bf_callers(Var arglist, Byte next, void *vdata, Objid progr)
 				   root_activ_vector, line_numbers_too));
 }
 
-static package
+STATIC package
 bf_task_stack(Var arglist, Byte next, void *vdata, Objid progr)
 {
     int nargs = arglist.v.list[0].v.num;
@@ -2773,7 +2794,7 @@ write_activ(activation a)
     }
 }
 
-static int
+STATIC int
 check_pc_validity(Program * prog, int which_vector, unsigned pc)
 {
     Bytecodes *bc = (which_vector == -1

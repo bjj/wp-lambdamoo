@@ -25,7 +25,7 @@
 #include "program.h"
 #include "structures.h"
 
-typedef struct {
+typedef struct package {
     enum {
 	BI_RETURN,		/* Normal function return */
 	BI_RAISE,		/* Raising an error */
@@ -75,8 +75,10 @@ typedef void *(*bf_read_type) (void);
 
 extern const char *name_func_by_num(unsigned);
 extern unsigned number_func_by_name(const char *);
+extern int info_func_by_num(unsigned, var_type **, var_type *);
 
 extern unsigned register_function(const char *, int, int, bf_type,...);
+extern unsigned register_function_rt(const char *, var_type, int, int, bf_type,...);
 extern unsigned register_function_with_read_write(const char *, int, int,
 						  bf_type, bf_read_type,
 						  bf_write_type,...);

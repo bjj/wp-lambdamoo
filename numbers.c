@@ -262,24 +262,27 @@ compare_numbers(Var a, Var b)
 
 #define SIMPLE_BINARY(name, op)					\
 		Var						\
-		do_ ## name(Var a, Var b)			\
+		do_ ## name(Var *a, Var *b)			\
 		{						\
 		    Var	ans;					\
 								\
-		    if (a.type != b.type) {			\
+		    if (a->type != b->type) {			\
 			ans.type = TYPE_ERR;			\
 			ans.v.err = E_TYPE;			\
-		    } else if (a.type == TYPE_INT) {		\
+		    } else if (a->type == TYPE_INT) {		\
 			ans.type = TYPE_INT;			\
-			ans.v.num = a.v.num op b.v.num;		\
-		    } else {					\
-			double d = *a.v.fnum op *b.v.fnum;	\
+			ans.v.num = a->v.num op b->v.num;	\
+		    } else if (a->type == TYPE_FLOAT) {		\
+			double d = *a->v.fnum op *b->v.fnum;	\
 								\
 			if (!IS_REAL(d)) {			\
 			    ans.type = TYPE_ERR;		\
 			    ans.v.err = E_FLOAT;		\
 			} else					\
 			    ans = new_float(d);			\
+		    } else {					\
+			ans.type = TYPE_ERR;			\
+			ans.v.err = E_TYPE;			\
 		    }						\
 								\
 		    return ans;					\
@@ -290,19 +293,19 @@ SIMPLE_BINARY(subtract, -)
 SIMPLE_BINARY(multiply, *)
 #define DIVISION_OP(name, iop, fexpr)				\
 		Var						\
-		do_ ## name(Var a, Var b)			\
+		do_ ## name(Var *a, Var *b)			\
 		{						\
 		    Var	ans;					\
 								\
-		    if (a.type != b.type) {			\
+		    if (a->type != b->type) {			\
 			ans.type = TYPE_ERR;			\
 			ans.v.err = E_TYPE;			\
-		    } else if (a.type == TYPE_INT		\
-			       && b.v.num != 0) {		\
+		    } else if (a->type == TYPE_INT		\
+			       && b->v.num != 0) {		\
 			ans.type = TYPE_INT;			\
-			ans.v.num = a.v.num iop b.v.num;	\
-		    } else if (a.type == TYPE_FLOAT		\
-			       && *b.v.fnum != 0.0) {		\
+			ans.v.num = a->v.num iop b->v.num;	\
+		    } else if (a->type == TYPE_FLOAT		\
+			       && *b->v.fnum != 0.0) {		\
 			double d = fexpr;			\
 								\
 			if (!IS_REAL(d)) {			\
@@ -318,8 +321,8 @@ SIMPLE_BINARY(multiply, *)
 		    return ans;					\
 		}
 
-DIVISION_OP(divide, /, *a.v.fnum / *b.v.fnum)
-DIVISION_OP(modulus, %, fmod(*a.v.fnum, *b.v.fnum))
+DIVISION_OP(divide, /, *a->v.fnum / *b->v.fnum)
+DIVISION_OP(modulus, %, fmod(*a->v.fnum, *b->v.fnum))
 Var
 do_power(Var lhs, Var rhs)
 {				/* LHS ^ RHS */
@@ -677,34 +680,34 @@ register_numbers(void)
 {
     zero.type = TYPE_INT;
     zero.v.num = 0;
-    register_function("toint", 1, 1, bf_toint, TYPE_ANY);
-    register_function("tonum", 1, 1, bf_toint, TYPE_ANY);
-    register_function("tofloat", 1, 1, bf_tofloat, TYPE_ANY);
-    register_function("min", 1, -1, bf_min, TYPE_NUMERIC);
-    register_function("max", 1, -1, bf_max, TYPE_NUMERIC);
-    register_function("abs", 1, 1, bf_abs, TYPE_NUMERIC);
-    register_function("random", 0, 1, bf_random, TYPE_INT);
-    register_function("time", 0, 0, bf_time);
-    register_function("ctime", 0, 1, bf_ctime, TYPE_INT);
-    register_function("floatstr", 2, 3, bf_floatstr,
+    register_function_rt("toint", TYPE_INT, 1, 1, bf_toint, TYPE_ANY);
+    register_function_rt("tonum", TYPE_INT, 1, 1, bf_toint, TYPE_ANY);
+    register_function_rt("tofloat", TYPE_FLOAT, 1, 1, bf_tofloat, TYPE_ANY);
+    register_function_rt("min", TYPE_NUMERIC, 1, -1, bf_min, TYPE_NUMERIC);
+    register_function_rt("max", TYPE_NUMERIC, 1, -1, bf_max, TYPE_NUMERIC);
+    register_function_rt("abs", TYPE_NUMERIC, 1, 1, bf_abs, TYPE_NUMERIC);
+    register_function_rt("random", TYPE_INT, 0, 1, bf_random, TYPE_INT);
+    register_function_rt("time", TYPE_INT, 0, 0, bf_time);
+    register_function_rt("ctime", TYPE_STR, 0, 1, bf_ctime, TYPE_INT);
+    register_function_rt("floatstr", TYPE_STR, 2, 3, bf_floatstr,
 		      TYPE_FLOAT, TYPE_INT, TYPE_ANY);
 
-    register_function("sqrt", 1, 1, bf_sqrt, TYPE_FLOAT);
-    register_function("sin", 1, 1, bf_sin, TYPE_FLOAT);
-    register_function("cos", 1, 1, bf_cos, TYPE_FLOAT);
-    register_function("tan", 1, 1, bf_tan, TYPE_FLOAT);
-    register_function("asin", 1, 1, bf_asin, TYPE_FLOAT);
-    register_function("acos", 1, 1, bf_acos, TYPE_FLOAT);
-    register_function("atan", 1, 2, bf_atan, TYPE_FLOAT, TYPE_FLOAT);
-    register_function("sinh", 1, 1, bf_sinh, TYPE_FLOAT);
-    register_function("cosh", 1, 1, bf_cosh, TYPE_FLOAT);
-    register_function("tanh", 1, 1, bf_tanh, TYPE_FLOAT);
-    register_function("exp", 1, 1, bf_exp, TYPE_FLOAT);
-    register_function("log", 1, 1, bf_log, TYPE_FLOAT);
-    register_function("log10", 1, 1, bf_log10, TYPE_FLOAT);
-    register_function("ceil", 1, 1, bf_ceil, TYPE_FLOAT);
-    register_function("floor", 1, 1, bf_floor, TYPE_FLOAT);
-    register_function("trunc", 1, 1, bf_trunc, TYPE_FLOAT);
+    register_function_rt("sqrt", TYPE_FLOAT, 1, 1, bf_sqrt, TYPE_FLOAT);
+    register_function_rt("sin", TYPE_FLOAT, 1, 1, bf_sin, TYPE_FLOAT);
+    register_function_rt("cos", TYPE_FLOAT, 1, 1, bf_cos, TYPE_FLOAT);
+    register_function_rt("tan", TYPE_FLOAT, 1, 1, bf_tan, TYPE_FLOAT);
+    register_function_rt("asin", TYPE_FLOAT, 1, 1, bf_asin, TYPE_FLOAT);
+    register_function_rt("acos", TYPE_FLOAT, 1, 1, bf_acos, TYPE_FLOAT);
+    register_function_rt("atan", TYPE_FLOAT, 1, 2, bf_atan, TYPE_FLOAT, TYPE_FLOAT);
+    register_function_rt("sinh", TYPE_FLOAT, 1, 1, bf_sinh, TYPE_FLOAT);
+    register_function_rt("cosh", TYPE_FLOAT, 1, 1, bf_cosh, TYPE_FLOAT);
+    register_function_rt("tanh", TYPE_FLOAT, 1, 1, bf_tanh, TYPE_FLOAT);
+    register_function_rt("exp", TYPE_FLOAT, 1, 1, bf_exp, TYPE_FLOAT);
+    register_function_rt("log", TYPE_FLOAT, 1, 1, bf_log, TYPE_FLOAT);
+    register_function_rt("log10", TYPE_FLOAT, 1, 1, bf_log10, TYPE_FLOAT);
+    register_function_rt("ceil", TYPE_FLOAT, 1, 1, bf_ceil, TYPE_FLOAT);
+    register_function_rt("floor", TYPE_FLOAT, 1, 1, bf_floor, TYPE_FLOAT);
+    register_function_rt("trunc", TYPE_FLOAT, 1, 1, bf_trunc, TYPE_FLOAT);
 }
 
 char rcsid_numbers[] = "$Id$";

@@ -76,6 +76,7 @@ struct bft_entry {
     int minargs;
     int maxargs;
     var_type *prototype;
+    var_type return_type;
     bf_type func;
     bf_read_type read;
     bf_write_type write;
@@ -86,7 +87,8 @@ static struct bft_entry bf_table[MAX_FUNC];
 static unsigned top_bf_table = 0;
 
 static unsigned
-register_common(const char *name, int minargs, int maxargs, bf_type func,
+register_common(const char *name, var_type return_type,
+		int minargs, int maxargs, bf_type func,
 		bf_read_type read, bf_write_type write, va_list args)
 {
     int va_index;
@@ -105,6 +107,7 @@ register_common(const char *name, int minargs, int maxargs, bf_type func,
     bf_table[top_bf_table].protect_str = str_dup(reset_stream(s));
     stream_printf(s, "bf_%s", name);
     bf_table[top_bf_table].verb_str = str_dup(reset_stream(s));
+    bf_table[top_bf_table].return_type = return_type;
     bf_table[top_bf_table].minargs = minargs;
     bf_table[top_bf_table].maxargs = maxargs;
     bf_table[top_bf_table].func = func;
@@ -131,7 +134,20 @@ register_function(const char *name, int minargs, int maxargs,
     unsigned ans;
 
     va_start(args, func);
-    ans = register_common(name, minargs, maxargs, func, 0, 0, args);
+    ans = register_common(name, TYPE_ANY, minargs, maxargs, func, 0, 0, args);
+    va_end(args);
+    return ans;
+}
+
+unsigned
+register_function_rt(const char *name, var_type return_type,
+		int minargs, int maxargs, bf_type func,...)
+{
+    va_list args;
+    unsigned ans;
+
+    va_start(args, func);
+    ans = register_common(name, return_type, minargs, maxargs, func, 0, 0, args);
     va_end(args);
     return ans;
 }
@@ -145,7 +161,7 @@ register_function_with_read_write(const char *name, int minargs, int maxargs,
     unsigned ans;
 
     va_start(args, write);
-    ans = register_common(name, minargs, maxargs, func, read, write, args);
+    ans = register_common(name, TYPE_ANY, minargs, maxargs, func, read, write, args);
     va_end(args);
     return ans;
 }
@@ -161,6 +177,21 @@ name_func_by_num(unsigned n)
 	return func_not_found_msg;
     else
 	return bf_table[n].name;
+}
+
+int
+info_func_by_num(unsigned n, var_type **prototype, var_type *return_type)
+{				/* used by optimize only */
+    if (n >= top_bf_table)
+	return 0;
+    else {
+	if (prototype)
+	    *prototype = bf_table[n].prototype;
+	if (return_type)
+	    *return_type = bf_table[n].return_type;
+	return (bf_table[n].maxargs == -1) ? bf_table[n].minargs :
+					    bf_table[n].maxargs;
+    }
 }
 
 unsigned
@@ -200,7 +231,7 @@ call_bi_func(unsigned n, Var arglist, Byte func_pc,
 	 * Check permissions, if protected
 	 */
 	/* if (caller() != SYSTEM_OBJECT && server_flag_option(f->protect_str)) { */
-	if (caller() != SYSTEM_OBJECT && f->protected) {
+	if (f->protected && caller() != SYSTEM_OBJECT) {
 	    /* Try calling #0:bf_FUNCNAME(@ARGS) instead */
 	    enum error e = call_verb2(SYSTEM_OBJECT, f->verb_str, arglist, 0);
 

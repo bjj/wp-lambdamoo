@@ -32,6 +32,7 @@
 #include "storage.h"
 #include "streams.h"
 #include "utils.h"
+#include "optimize.h"
 
 static Program *prog;
 
@@ -496,9 +497,44 @@ unparse_name_expr(Stream * str, Expr * expr)
     stream_add_char(str, ')');
 }
 
+void
+unparse_typemask(Stream *str, unsigned short mask)
+{
+	int i;
+	struct Expr_Attr lamb;
+
+	for (i = 0; i < sizeof(lamb.typemask)*8; ++i) {
+		char c;
+		if ((mask & (1 << i)) == 0)
+			continue;
+		switch (i) {
+		case TYPE_INT: c = 'i'; break;
+		case TYPE_OBJ: c = 'o'; break;
+		case _TYPE_STR: c = 's'; break;
+		case TYPE_ERR: c = 'e'; break;
+		case _TYPE_LIST: c = 'l'; break;
+		case TYPE_CLEAR: c = ' '; break;
+		case TYPE_NONE: c = 'x'; break;
+		case TYPE_CATCH: c = 'T'; break;
+		case TYPE_FINALLY: c = 'F'; break;
+		case _TYPE_FLOAT: c = 'f'; break;
+		default: c = '?'; break;
+		}
+		stream_add_char(str, c);
+	}
+}
+
 static void
 unparse_expr(Stream * str, Expr * expr)
 {
+	int has_attributes = !TYPEMASK_IS_ANYTHING(expr->a.typemask) || expr->a.constant || expr->a.known_true;
+	if (has_attributes) {
+		stream_add_char(str, '<');
+		if (expr->a.constant)
+			stream_add_char(str, '=');
+		if (expr->a.known_true)
+			stream_add_string(str, "T ");
+	}
     switch (expr->kind) {
     case EXPR_PROP:
 	if (expr->e.bin.lhs->kind == EXPR_VAR
@@ -617,9 +653,19 @@ unparse_expr(Stream * str, Expr * expr)
 	stream_add_char(str, ')');
 	break;
 
-    case EXPR_ID:
+    case EXPR_ID: {
+		if (!TYPEMASK_IS_ANYTHING(expr->a.typemask_put) && expr->a.typemask_put) {
+			stream_add_char(str, '<');
+			unparse_typemask(str, expr->a.typemask_put);
+			stream_add_char(str, '>');
+		}
+	if (expr->a.guaranteed)
+		stream_add_char(str, '~');
+	if (expr->a.last_use)
+		stream_add_char(str, '&');
 	stream_add_string(str, prog->var_names[expr->e.id]);
 	break;
+    }
 
     case EXPR_LIST:
 	stream_add_char(str, '{');
@@ -657,6 +703,12 @@ unparse_expr(Stream * str, Expr * expr)
 	stream_add_string(str, "(?!?!?!?!?)");
 	break;
     }
+	if (has_attributes) {
+		stream_add_char(str, ' ');
+		if (!TYPEMASK_IS_ANYTHING(expr->a.typemask))
+			unparse_typemask(str, expr->a.typemask);
+		stream_add_char(str, '>');
+	}
 }
 
 static void
@@ -697,16 +749,30 @@ unparse_scatter(Stream * str, Scatter * sc)
 }
 
 void
-unparse_program(Program * p, Unparser_Receiver r, void *data,
+unparse_stmts(Stmt *stmt, Program *p, Unparser_Receiver r, void *data,
 		int fully_parenthesize, int indent_lines, int f_index)
 {
-    Stmt *stmt = decompile_program(p, f_index);
-
     prog = p;
     receiver = r;
     receiver_data = data;
     list_prg(stmt, fully_parenthesize, indent_lines);
+}
+
+void
+unparse_program(Program * p, Unparser_Receiver r, void *data,
+		int fully_parenthesize, int indent_lines, int f_index)
+{
+#if 0
+    Stmt *stmt = decompile_program(p, f_index);
+    unparse_stmts(stmt, p, r, data, fully_parenthesize, indent_lines, f_index);
     free_stmt(stmt);
+#else
+    Var *lines = p->code.v.list;
+    int i;
+
+    for (i = 1; i <= lines[0].v.num; ++i)
+	(r)(data, lines[i].v.str);
+#endif
 }
 
 static void

@@ -28,6 +28,8 @@ typedef struct {
      numbytes_stack;
     Byte *vector;
     unsigned size;
+    int (*jitfn)();
+    void **jitentries; /* XXX */
     unsigned max_stack;
 } Bytecodes;
 
@@ -46,6 +48,8 @@ typedef struct {
 
     unsigned num_var_names;
     const char **var_names;
+
+    Var code;
 
     unsigned cached_lineno;
     unsigned cached_lineno_pc;
