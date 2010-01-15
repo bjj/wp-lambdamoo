@@ -17,8 +17,7 @@ CC = @CC@
 LIBRARIES = @LIBS@
 YACC = @YACC@
 
-#CFLAGS = -O2 -I../lightning -I../lightning/lightning/i386
-CFLAGS = -m32 -O2 -I../lightning -I../lightning/lightning/i386
+CFLAGS = -O2 -I../lightning -I../lightning/lightning/i386
 # If you're using GCC, you may prefer:
 # CFLAGS = -O2 -finline-functions
 #

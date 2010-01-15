@@ -38,7 +38,15 @@
 #define JIM_RTS		JIT_V0
 #define JIM_RUN_ACTIV	JIT_V1
 
-#define Offset(type, member) ((int) (& ((type *)0)->member))
+#define Offset(type, member) ((size_t) (& ((type *)0)->member))
+
+#define VAR_SHIFT  (sizeof(Var) == 8 ? 3 :	\
+		    sizeof(Var) == 16 ? 4 :	\
+		    0)
+
+#define PTR_SHIFT  (sizeof(void *) == 4 ? 2 :	\
+		    sizeof(void *) == 8 ? 3 :	\
+		    0)
 
 #define jit_is_preserved(reg) \
 	(reg == JIT_V0 || reg == JIT_V1 || reg == JIT_V2)
@@ -46,11 +54,11 @@
 #define jim_free_var(varp_reg) do { jit_insn *__ref;			\
 	jit_ldxi_ui(JIT_R0, varp_reg, Offset(Var, type));		\
 	__ref = jit_bmci_ui(jit_forward(), JIT_R0, TYPE_COMPLEX_FLAG);	\
-	if (!jit_is_preserved(varp_reg)) jit_pushr_i(varp_reg);		\
+	if (!jit_is_preserved(varp_reg)) jit_pushr_p(varp_reg);		\
 	jit_prepare(1);							\
 	jit_pusharg_p(varp_reg);					\
 	jit_finish(complex_free_var);					\
-	if (!jit_is_preserved(varp_reg)) jit_popr_i(varp_reg);		\
+	if (!jit_is_preserved(varp_reg)) jit_popr_p(varp_reg);		\
 	jit_patch(__ref);						\
 } while (0)
 
@@ -58,11 +66,11 @@
 #define jim_var_ref(varp_reg) do { jit_insn *__ref;			\
 	jit_ldxi_ui(JIT_R0, varp_reg, Offset(Var, type));		\
 	__ref = jit_bmci_ui(jit_forward(), JIT_R0, TYPE_COMPLEX_FLAG);	\
-	if (!jit_is_preserved(varp_reg)) jit_pushr_i(varp_reg);		\
+	if (!jit_is_preserved(varp_reg)) jit_pushr_p(varp_reg);		\
 	jit_prepare(1);							\
 	jit_pusharg_p(varp_reg);					\
 	jit_finish(complex_var_ref);					\
-	if (!jit_is_preserved(varp_reg)) jit_popr_i(varp_reg);		\
+	if (!jit_is_preserved(varp_reg)) jit_popr_p(varp_reg);		\
 	jit_patch(__ref);						\
 } while (0)
 
@@ -85,7 +93,7 @@ extern unsigned top_activ_stack;
 
 #define jim_lea_RT_ENV_slot_r(reg, slot) (void)(\
 	jim_lea_RT_ENV(reg),				\
-	jit_lshi_i(slot, slot, 3),			\
+	jit_lshi_i(slot, slot, VAR_SHIFT),		\
 	jit_addr_p(reg, reg, slot))
 
 #define jim_LOAD_STATE_VARIABLES() (void)( \
@@ -165,7 +173,7 @@ jim_glue(jit_state * jit)
     jit_finish(current_bytecodes);
     jit_retval(JIT_R0);
     jit_ldxi_p(JIT_R0, JIT_R0, Offset(Bytecodes, jitentries));
-    jit_lshi_i(JIT_V2, JIT_V2, 2);
+    jit_lshi_i(JIT_V2, JIT_V2, PTR_SHIFT);
     jit_ldxr_p(JIT_R0, JIT_V2, JIT_R0);
     jit_jmpr(JIT_R0);
 
@@ -459,7 +467,7 @@ jim_REF(jit_state * jit, int list_only, int keep_ref, int id, int last_use, unsi
     jit_blei_i(L_raise_E_RANGE, JIT_R1, 0);
     jit_ldxi_i(JIT_R2, JIT_V2, Offset(Var, v.num));
     jit_bgtr_i(L_raise_E_RANGE, JIT_R1, JIT_R2);
-    jit_lshi_i(JIT_R1, JIT_R1, 3);
+    jit_lshi_i(JIT_R1, JIT_R1, VAR_SHIFT);
     jit_addr_p(JIT_R2, JIT_V2, JIT_R1);		/* R2 = &elt */
     if (id >= 0)
 	jim_POP();    /* there is no spoon.  err, list */
@@ -995,7 +1003,7 @@ jim_INDEXSET(jit_state * jit, unsigned list_typemask, unsigned idx_typemask)
 	jit_ldxi_i(JIT_R1, JIT_V2, Offset(Var, v.num));
 	jit_bgtr_i(L_raise_E_RANGE, JIT_R0, JIT_R1);
 	jim_POPn(2);
-	jit_lshi_i(JIT_R0, JIT_R0, 3);
+	jit_lshi_i(JIT_R0, JIT_R0, VAR_SHIFT);
 	jit_addr_p(JIT_V2, JIT_V2, JIT_R0);
 	jim_free_var(JIT_V2);
 	jim_copy_var_R0R1(JIT_V2, 0, JIM_RTS, sizeof(Var));
@@ -1040,7 +1048,7 @@ make_for_list(jit_state * jit, int slot, jit_insn ** topp, jit_insn ** rel1p)
     jit_addi_i(JIT_R0, JIT_R0, 1);
     jit_stxi_i(Offset(Var, v.num) - sizeof(Var), JIM_RTS, JIT_R0);
     /* get list offset in safe reg */
-    jit_lshi_i(JIT_R0, JIT_R0, 3);
+    jit_lshi_i(JIT_R0, JIT_R0, VAR_SHIFT);
     jit_addr_p(JIT_V2, JIT_V2, JIT_R0);
     /* get slot and free it */
     jim_lea_RT_ENV_slot_i(JIT_R2, slot);
@@ -1727,7 +1735,7 @@ init_jit()
 {
     jit_state *jit = &jjj;
 
-    if (sizeof(Var) != 8 || sizeof(void *) != 4)
+    if (VAR_SHIFT == 0 || PTR_SHIFT == 0)
 	panic("init_jit sizeof assertions for lshi");
 
     jit_run_glue = (int (*)()) (jit_set_ip(jit_run_glue_buf).iptr);
