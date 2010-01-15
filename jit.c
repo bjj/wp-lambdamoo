@@ -12,6 +12,7 @@
 #include "functions.h"
 #include "numbers.h"
 #include "my-stdio.h"
+#include "my-string.h"
 #include "jit.h"
 #include "optimize.h"
 #include <lightning.h>
@@ -965,7 +966,8 @@ indexset_helper(Var *args)
 
 	if (var_refcount(args[-3]) == 1) {
 	    /* blah blah discards const blah */
-	    args[-3].v.str[idx - 1] = args[-1].v.str[0];
+	    char *p = &args[-3].v.str[idx - 1];
+	    *p = args[-1].v.str[0];
 	} else {
 	    tmp_str = str_dup(args[-3].v.str);
 	    tmp_str[idx - 1] = args[-1].v.str[0];
@@ -1439,7 +1441,7 @@ jim_SUBTRACT(jit_state * jit)
 /* indexed by char, can't overflow */
 static struct scatter_helper_info {
     int id;
-    int flag
+    int flag;
 } scatter_info[257];
 
 static enum error

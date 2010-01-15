@@ -43,6 +43,7 @@
 #include "sym_table.h"
 #include "utils.h"
 #include "version.h" 
+#define YYMALLOC malloc
 
 static Stmt    	       *prog_start;
 static int		dollars_ok;
