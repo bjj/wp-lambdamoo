@@ -73,10 +73,6 @@ typedef struct {
 
 typedef vmstruct *vm;
 
-typedef enum {
-    TASK_INPUT, TASK_FORKED, TASK_SUSPENDED
-} task_kind;
-
 #define alloc_data(size)   mymalloc(size, M_BI_FUNC_DATA)
 #define free_data(ptr)     myfree((void *) ptr, M_BI_FUNC_DATA)
 
@@ -87,7 +83,7 @@ extern enum error call_verb(Objid obj, const char *vname, Var args,
 /* if your vname is already a moo str (via str_dup) then you can
    use this interface instead */
 extern enum error call_verb2(Objid obj, const char *vname, Var args,
-			    int do_pass);
+			     int do_pass);
 
 extern int setup_activ_for_eval(Program * prog);
 
@@ -112,13 +108,13 @@ extern int unwind_stack(Finally_Reason, Var, enum outcome *outcome);
 extern int raise_error(struct package *p, enum outcome *outcome);
 
 extern enum outcome do_forked_task(Program * prog, Var * rt_env,
-				   activation a, int f_id, Var * result);
+				   activation a, int f_id);
 extern enum outcome do_input_task(Objid user, Parsed_Command * pc,
 				  Objid this, db_verb_handle vh);
 extern enum outcome do_server_verb_task(Objid this, const char *verb,
 					Var args, db_verb_handle h,
 					Objid player, const char *argstr,
-				     Var * result, int do_db_tracebacks);
+					Var * result, int do_db_tracebacks);
 extern enum outcome do_server_program_task(Objid this, const char *verb,
 					   Var args, Objid vloc,
 					   const char *verbname,
@@ -127,8 +123,7 @@ extern enum outcome do_server_program_task(Objid this, const char *verb,
 					   const char *argstr,
 					   Var * result,
 					   int do_db_tracebacks);
-extern enum outcome resume_from_previous_vm(vm the_vm, Var value,
-					    task_kind tk, Var * result);
+extern enum outcome resume_from_previous_vm(vm the_vm, Var value);
 
 extern int task_timed_out;
 extern void abort_running_task(void);
@@ -151,6 +146,24 @@ extern int read_activ(activation * a, int which_vector);
 
 /* 
  * $Log$
+ * Revision 1.8  2004/05/22 01:25:43  wrog
+ * merging in WROGUE changes (W_SRCIP, W_STARTUP, W_OOB)
+ *
+ * Revision 1.7.2.2  2003/06/07 13:14:24  wrog
+ * fix log entry
+ *
+ * Revision 1.7.2.1  2003/06/04 21:28:59  wrog
+ * removed useless arguments from resume_from_previous_vm(), do_forked_task();
+ * replaced current_task_kind with is_fg argument for do_task();
+ * made enum task_kind internal to tasks.c
+ *
+ * Revision 1.7  2002/09/15 23:21:01  xplat
+ * GNU indent normalization.
+ *
+ * Revision 1.6  2002/08/18 09:47:26  bjj
+ * Finally made free_activation() take a pointer after noticing how !$%^&
+ * much time it was taking in a particular profiling run.
+ *
  * Revision 1.5  2001/03/12 05:10:54  bjj
  * Split out call_verb and call_verb2.  The latter must only be called with
  * strings that are already MOO strings (str_ref-able).
